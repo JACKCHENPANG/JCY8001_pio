@@ -1,46 +1,52 @@
 # JCY8001 PlatformIO 项目进度
 
-> 更新: 2026-05-04 (凌晨)
+> 更新: 2026-05-04 (早)
 
 ## 任务总览
 
-| 任务 | 状态 | 说明 |
-|------|------|------|
-| PlatformIO 项目搭建 | ✅ 完成 | 基础框架完成 |
-| DNB1101 SPI 驱动移植 | ✅ 完成 | spi.c 完整实现 |
-| DNB1101 阻抗测量集成 | ✅ 完成 | register.c 轮询机制 |
-| DNB1101 温度读取 | ✅ 完成 | dnb1101_get_temperature() 实现 |
-| 启动测量命令 | ✅ 完成 | write_coil(COIL_START_MEASURE) 触发测量 |
-| Modbus RTU 协议栈 | ✅ 完成 | 寄存器映射完成 |
-| 编译验证 | ✅ 通过 | RAM 1.1KB / 49KB, Flash 2.9KB / 256KB |
-| GitHub Push | ❌ 阻塞 | 认证缺失 + 仓库不存在 |
-| 硬件实测验证 | ⏳ 待定 | 需要烧录到实际硬件 |
+|| 任务 | 状态 | 说明 |
+||------|------|------|
+|| PlatformIO 项目搭建 | ✅ 完成 | 基础框架完成 |
+|| DNB1101 SPI 驱动移植 | ✅ 完成 | spi.c 完整实现 |
+|| DNB1101 阻抗测量集成 | ✅ 完成 | register.c 轮询机制 |
+|| DNB1101 温度读取 | ✅ 完成 | dnb1101_get_temperature() 实现 |
+|| 启动测量命令 | ✅ 完成 | write_coil(COIL_START_MEASURE) 触发测量 |
+|| Modbus RTU 协议栈 | ✅ 完成 | 寄存器映射完成 |
+|| 编译验证 | ✅ 通过 | RAM 1.1KB / 49KB, Flash 2.9KB / 256KB |
+|| GitHub Push | ❌ 阻塞 | gh CLI 已安装，仍需认证 |
+|| 硬件实测验证 | ⏳ 待定 | 需要烧录到实际硬件 |
 
 ## GitHub 状态
 
 **远程仓库**: `https://github.com/jcystech/JCY8001_pio.git`
 
 **问题**:
-1. API 返回 404 - 仓库不存在（需要先在 GitHub 网页创建）
-2. 无 GitHub 认证凭据（无 `gh` CLI，无 token，无 SSH key）
+1. API 返回 404 - 仓库不存在（需要创建）
+2. GitHub 未认证 - `gh` CLI 已安装 (v2.92.0)，但需要登录
 
-**尝试的操作**:
+**当前状态**:
 ```bash
-# git push 结果
-fatal: could not read Username for 'https://github.com': Device not configured
+$ gh --version
+gh version 2.92.0 (2026-04-28)
 
-# 认证检查
-- gh CLI: 未安装
-- GitHub token: 无
-- SSH key: 无 (~/.ssh/ 只有 known_hosts)
-- git-credentials: 无
-- credential.helper: store (但无凭据)
+$ gh auth status
+You are not logged into any GitHub hosts. To log in, run: gh auth login
 ```
 
-**解决方案** (需要用户操作):
-1. **方案A**: 在 github.com 创建仓库 → 然后配置 token/SSH
-2. **方案B**: 安装 gh CLI 并认证 `brew install gh && gh auth login`
-3. **方案C**: 生成 SSH key 并添加到 GitHub
+**解决方案** (需要用户交互):
+```bash
+# 运行以下命令并按提示操作:
+gh auth login
+
+# 或使用 Token 登录 (需要 GitHub Personal Access Token):
+gh auth login --with-token < TOKEN
+```
+
+**创建仓库并推送** (认证后执行):
+```bash
+gh repo create JCY8001_pio --private --source=. --remote=origin
+git push -u origin main
+```
 
 ## 已完成功能
 
@@ -102,9 +108,9 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
 ## 待完成 / 阻塞
 
 ### 高优先级
-1. **GitHub Push** - 需要:
-   - 在 github.com 创建仓库 (当前 404)
-   - 配置 GitHub 认证凭据
+1. **GitHub Push** - 需要用户运行 `gh auth login` 认证后:
+   - `gh repo create JCY8001_pio --private --source=. --remote=origin`
+   - `git push -u origin main`
 2. **硬件实测** - 烧录到 JCY8001 设备验证:
    - Modbus 通讯是否正常
    - DNB1101 SPI 握手
@@ -121,6 +127,7 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
 ## Git 提交记录
 
 ```
+868e3db docs: 更新 goals.md - GitHub push 阻塞分析
 db70cc8 docs: 更新 goals.md 进度
 179841e feat: DNB1101温度读取 + 启动测量命令实现
 30bc468 docs: 添加 goals.md 项目进度跟踪
@@ -130,11 +137,23 @@ a2526d3 JCY8001 PlatformIO: DNB1101 SPI移植 + Modbus RTU + 完整驱动
 
 ## 下一步行动
 
-1. **GitHub**: 用户需要在 github.com 创建 `JCY8001_pio` 仓库，然后配置认证
-2. **硬件测试**: 烧录固件到 JCY8001 设备，通过 Modbus 工具验证:
-   - 读取 0x3000-0x3001 (Z_RE)
-   - 读取 0x3080-0x3081 (Z_IM)
-   - 读取 0x3300 (温度)
-   - 写入 0x4000 设置频率
-   - 写线圈 0x0000=1 启动测量
-3. **DNB1101 SPI 验证**: 用示波器/逻辑分析仪检查 SPI1 波形
+### 1. GitHub 推送 (需要用户操作一次)
+```bash
+gh auth login    # 在终端运行，按提示完成浏览器认证
+gh repo create JCY8001_pio --private --source=. --remote=origin
+git push -u origin main
+```
+
+### 2. 硬件测试
+烧录固件到 JCY8001 设备，通过 Modbus 工具验证:
+- 读取 0x3000-0x3001 (Z_RE - 阻抗实部)
+- 读取 0x3080-0x3081 (Z_IM - 阻抗虚部)
+- 读取 0x3300 (温度)
+- 写入 0x4000 设置测量频率
+- 写线圈 0x0000=1 启动测量
+
+### 3. DNB1101 SPI 验证 (可选)
+用示波器/逻辑分析仪检查 SPI1 波形:
+- PA5 (SCK): 1MHz 方波
+- PA6 (MISO): DNB1101 响应数据
+- PA7 (MOSI): 命令输出
