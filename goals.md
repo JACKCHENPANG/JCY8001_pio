@@ -1,6 +1,6 @@
 # JCY8001 PlatformIO 项目进度
 
-> 更新: 2026-05-04 (早7点)
+> 更新: 2026-05-04 (早8点)
 
 ## 任务总览
 
@@ -14,57 +14,24 @@
 | Modbus RTU 协议栈 | ✅ 完成 | 寄存器映射完成 |
 | 编译验证 | ✅ 通过 | RAM 1.1KB / 49KB, Flash 2.9KB / 256KB |
 | DNB1101 SPI 通讯验证 | ✅ 代码完成 | 代码审查通过，待硬件实测 |
-| GitHub Push | ❌ 阻塞 | 仓库不存在 + 无认证 Token |
+| GitHub Push | ✅ 完成 | 推送至 JACKCHENPANG/JCY8001_pio.git |
 
-## GitHub 推送状态（2026-05-04）
+## GitHub 推送状态（2026-05-04 早8点）
 
-**远程仓库**: `git@github.com:jcystech/JCY8001_pio.git`
+**远程仓库**: `git@github.com:JACKCHENPANG/JCY8001_pio.git`
 
 **SSH 认证**: ✅ 工作正常（认证用户: JACKCHENPANG）
 
-**问题**:
-1. `jcystech` 组织不存在 (API 返回 404)
-2. 仓库 `jcystech/JCY8001_pio` 不存在
-3. `gh` CLI 未登录，无 Token
+**推送结果**: ✅ 成功
 
-**排查记录**:
-- `curl https://api.github.com/orgs/jcystech` → 404（组织不存在）
-- `ssh -T git@github.com` → "Hi JACKCHENPANG!"（SSH OK）
-- `gh auth status` → 未登录
-- 环境变量无 `GH_TOKEN` / `GITHUB_TOKEN`
-- `security find-generic-password -s github.com` → 无存储密码
-- `~/.git-credentials` → 不存在
-- `~/.netrc` → 不存在
+**操作记录**:
+1. 远程 `origin` 原指向 `jcystech/JCY8001_pio`（该组织不存在，仓库404）
+2. 修改 remote 为 `JACKCHENPANG/JCY8001_pio`（该仓库已存在于 GitHub）
+3. 拉取远程初始提交，与本地合并解决冲突（platformio.ini / src/main.c）
+4. 清理 `src/tasks/` 中从远程合并进来的 FreeRTOS 文件（bare-metal 不需要）
+5. 推送完成
 
-**解决方案（需用户操作一次）**:
-
-方案A - Token 认证（非交互式，适合定时任务）:
-```bash
-# 1. 创建 GitHub Personal Access Token:
-#    Settings > Developer settings > Personal access tokens > Generate new token
-#    Scope: repo (全权限)
-#
-# 2. 设置环境变量:
-export GH_TOKEN="ghp_xxxxxxxxxxxx"
-
-# 3. 创建仓库并推送:
-gh auth login --with-token <<< "$GH_TOKEN"
-gh repo create JCY8001_pio --private --source=. --remote=origin
-git push -u origin main
-```
-
-方案B - 改用 `JACKCHENPANG` 账号（如果 jcystech 不存在）:
-```bash
-git remote set-url origin git@github.com:JACKCHENPANG/JCY8001_pio.git
-gh repo create JCY8001_pio --private --source=. --remote=origin
-git push -u origin main
-```
-
-方案C - 直接在 github.com 创建仓库:
-1. 打开 https://github.com/new
-2. 创建名为 `JCY8001_pio` 的私有仓库
-3. 将仓库 URL 改为 `git@github.com:jcystech/JCY8001_pio.git`（或 `JACKCHENPANG/JCY8001_pio.git`）
-4. 然后 `git push origin main`
+**仓库地址**: https://github.com/JACKCHENPANG/JCY8001_pio
 
 ## 已完成功能
 
@@ -145,36 +112,25 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
 ### 低优先级
 5. **DMA 传输** - `spi1_dma_transfer()` 当前为存根
 6. **错误处理增强** - SPI 通讯超时检测
-
 ## Git 提交记录
 
 ```
+2226c32 chore: remove FreeRTOS task files (bare-metal impl)
+8cee9b9 merge: resolve conflicts by taking local version
+c3c2b63 docs: 更新 goals.md - GitHub push 阻塞根因分析 + jcystech org 不存在
 0637af6 docs: 更新 goals.md - gh CLI已安装，GitHub push需认证
 868e3db docs: 更新 goals.md - GitHub push 阻塞分析
 db70cc8 docs: 更新 goals.md 进度 - 温度读取和启动测量已完成
 179841e feat: DNB1101温度读取 + 启动测量命令实现
 30bc468 docs: 添加 goals.md 项目进度跟踪
+a648e10 docs: 添加 README.md 项目文档
 a2526d3 JCY8001 PlatformIO: DNB1101 SPI移植 + Modbus RTU + 完整驱动
 c439de9 Initial commit: PlatformIO project scaffold
 ```
 
 ## 下一步行动
 
-### 1. GitHub 推送 (需要用户操作)
-```bash
-# 方案A: Token 认证（推荐）
-export GH_TOKEN="ghp_xxxxxxxxxxxx"  # 你的 GitHub PAT
-gh auth login --with-token <<< "$GH_TOKEN"
-gh repo create JCY8001_pio --private --source=. --remote=origin
-git push -u origin main
-
-# 方案B: 浏览器登录（仅限开发机）
-gh auth login
-gh repo create JCY8001_pio --private --source=. --remote=origin
-git push -u origin main
-```
-
-### 2. 硬件测试
+### 1. 硬件测试（高优先级）
 烧录固件到 JCY8001 设备，通过 Modbus 工具验证:
 - 读取 0x3000-0x3001 (Z_RE - 阻抗实部)
 - 读取 0x3080-0x3081 (Z_IM - 阻抗虚部)
@@ -182,7 +138,17 @@ git push -u origin main
 - 写入 0x4000 设置测量频率
 - 写线圈 0x0000=1 启动测量
 
-### 3. DNB1101 SPI 验证 (可选)
+**烧录命令**（Linux 开发主机 192.168.0.14）:
+```bash
+sshpass -p 'jcy123456' scp -o StrictHostKeyChecking=no .pio/build/genericSTM32F103RC/firmware.bin ubuntu@192.168.0.14:/tmp/
+JLinkExe -device STM32F103RC -if SWD -speed 4000 -autoconnect 1
+loadfile /tmp/firmware.bin
+r
+g
+exit
+```
+
+### 2. DNB1101 SPI 验证（可选）
 用示波器/逻辑分析仪检查 SPI1 波形:
 - PA5 (SCK): 1MHz 方波
 - PA6 (MISO): DNB1101 响应数据
