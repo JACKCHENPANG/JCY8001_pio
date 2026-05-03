@@ -137,6 +137,17 @@ uint8_t dnb1101_get_impedance(int32_t *re, int32_t *im) {
     return ret;
 }
 
+// ===== DNB1101 获取温度 =====
+uint8_t dnb1101_get_temperature(int16_t *temp) {
+    uint8_t data[2];
+    uint8_t ret = dnb1101_read_reg(DNB_REG_TEMP, data, 2);
+
+    /* 数据格式: 大端序 int16，×0.1°C */
+    *temp = ((int16_t)data[0] << 8) | data[1];
+
+    return ret;
+}
+
 // ===== DNB1101 启动测量 =====
 uint8_t dnb1101_start_measure(uint16_t freq_hz, uint8_t avg_count) {
     uint8_t cmd_buf[5];

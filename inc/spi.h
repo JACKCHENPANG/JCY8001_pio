@@ -68,6 +68,7 @@ uint8_t dnb1101_get_version(uint8_t *version);
 uint8_t dnb1101_get_status(uint8_t *status);
 uint8_t dnb1101_get_voltage(uint32_t *voltage);
 uint8_t dnb1101_get_impedance(int32_t *re, int32_t *im);
+uint8_t dnb1101_get_temperature(int16_t *temp);
 uint8_t dnb1101_start_measure(uint16_t freq_hz, uint8_t avg_count);
 
 #endif /* SPI1_H */

@@ -39,6 +39,7 @@ void register_update_dnb1101(void) {
     uint8_t status;
     uint32_t voltage;
     int32_t re, im;
+    int16_t temp;
 
     /* 读取 DNB1101 状态 */
     if (dnb1101_get_status(&status) == 0) {
@@ -54,6 +55,11 @@ void register_update_dnb1101(void) {
     if (dnb1101_get_impedance(&re, &im) == 0) {
         g_z_re = re;
         g_z_im = im;
+    }
+
+    /* 读取温度 */
+    if (dnb1101_get_temperature(&temp) == 0) {
+        g_temperature = (uint16_t)temp;
     }
 }
 
@@ -135,7 +141,8 @@ uint8_t read_discrete_input(uint16_t addr) {
 
 // ===== 写线圈 (FC05) =====
 void write_coil(uint16_t addr, uint8_t value) {
-    (void)addr;
-    (void)value;
-    /* TODO: 启动测量 */
+    if (addr == COIL_START_MEASURE && value == 1) {
+        /* 启动 DNB1101 测量 */
+        dnb1101_start_measure((uint16_t)g_zm_freq, (uint8_t)g_zm_avg_count);
+    }
 }
