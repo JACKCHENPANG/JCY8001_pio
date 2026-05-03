@@ -1,6 +1,6 @@
 # JCY8001 PlatformIO 项目进度
 
-> 更新: 2026-05-04 (上午)
+> 更新: 2026-05-04 (凌晨)
 
 ## 任务总览
 
@@ -20,26 +20,31 @@
 
 **远程仓库**: `https://github.com/jcystech/JCY8001_pio.git`
 
-**问题**: 
+**问题**:
 1. API 返回 404 - 仓库不存在（需要先在 GitHub 网页创建）
-2. 无 GitHub 认证凭据（无 `gh` CLI，无 token，无 SSH key 与 GitHub 关联）
+2. 无 GitHub 认证凭据（无 `gh` CLI，无 token，无 SSH key）
 
-**认证方案**:
+**尝试的操作**:
 ```bash
-# 方案1: GitHub CLI (推荐)
-brew install gh
-gh auth login
+# git push 结果
+fatal: could not read Username for 'https://github.com': Device not configured
 
-# 方案2: Personal Access Token
-git remote set-url origin https://<TOKEN>@github.com/jcystech/JCY8001_pio.git
-
-# 方案3: SSH Key (需将 ~/.ssh/id_ed25519.pub 添加到 GitHub)
-git remote set-url origin git@github.com:jcystech/JCY8001_pio.git
+# 认证检查
+- gh CLI: 未安装
+- GitHub token: 无
+- SSH key: 无 (~/.ssh/ 只有 known_hosts)
+- git-credentials: 无
+- credential.helper: store (但无凭据)
 ```
+
+**解决方案** (需要用户操作):
+1. **方案A**: 在 github.com 创建仓库 → 然后配置 token/SSH
+2. **方案B**: 安装 gh CLI 并认证 `brew install gh && gh auth login`
+3. **方案C**: 生成 SSH key 并添加到 GitHub
 
 ## 已完成功能
 
-### DNB1101 SPI 驱动 (spi.c)
+### DNB1101 SPI 驱动 (spi.c) ✅
 - [x] SPI1 初始化 (1MHz, Mode 0, PA5/PA6/PA7)
 - [x] `spi1_transfer()` 单字节传输
 - [x] `spi1_transfer_buf()` 缓冲区传输
@@ -52,19 +57,47 @@ git remote set-url origin git@github.com:jcystech/JCY8001_pio.git
 - [x] `dnb1101_get_temperature()` 温度读取 (DNB_REG_TEMP, 大端序 int16)
 - [x] `dnb1101_start_measure()` 启动测量命令
 
-### Modbus 寄存器 (register.c)
-- [x] 输入寄存器 (FC04): Z_RE, Z_IM, TEMP, VOLTAGE, STATUS
-- [x] 保持寄存器 (FC03/06): ZM_FREQ, ZM_AVG_COUNT, SAMPLE_RES
+### Modbus 寄存器 (register.c) ✅
+- [x] 输入寄存器 (FC04): Z_RE (0x3000-0x3001), Z_IM (0x3080-0x3081), TEMP (0x3300), VOLTAGE (0x3340-0x3341), STATUS (0x3380)
+- [x] 保持寄存器 (FC03/06): ZM_FREQ (0x4000), ZM_AVG_COUNT (0x4040/0x4F01), SAMPLE_RES (0x4F03)
 - [x] 100ms 周期 DNB1101 数据轮询（含温度）
 - [x] `write_coil(COIL_START_MEASURE)` → 调用 `dnb1101_start_measure()`
 - [x] SPI1 初始化集成到 `register_init()`
 
-### 固件架构 (main.c)
+### 固件架构 (main.c) ✅
 - [x] HSE 时钟配置 (8MHz × 9 = 72MHz)
 - [x] USART2 Modbus 通讯 (115200 8N1)
 - [x] SysTick 延时
 - [x] 全局中断启用
 - [x] DNB1101 版本预检查
+
+### Modbus RTU 协议栈 (modbus.c) ✅
+- [x] FC01 读线圈
+- [x] FC02 读离散输入
+- [x] FC03 读保持寄存器
+- [x] FC04 读输入寄存器
+- [x] FC05 写单个线圈
+- [x] FC06 写单个寄存器
+- [x] CRC16 Modbus 校验
+
+## 代码统计
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| src/spi.c | 172 | DNB1101 SPI 驱动 |
+| src/modbus.c | 321 | Modbus RTU 协议栈 |
+| src/register.c | 148 | 寄存器管理 |
+| src/main.c | 110 | 主程序 |
+| src/usart.c | 84 | USART2 驱动 |
+| src/crc16.c | 27 | CRC16 计算 |
+| inc/stm32f1xx.h | 268 | 寄存器定义 |
+| **总计** | **1388** | |
+
+**固件大小**:
+```
+RAM:   1,096 B  (49,152 B 可用)  →  2.2%
+Flash: 2,928 B  (262,144 B 可用) →  1.1%
+```
 
 ## 待完成 / 阻塞
 
@@ -78,23 +111,17 @@ git remote set-url origin git@github.com:jcystech/JCY8001_pio.git
    - 阻抗数据正确性
 
 ### 中优先级
-3. **Z_REAL / Z_VMAG 计算** - 需要在 register.c 中计算模值和幅值
-4. **启动测量命令参数** - 目前从保持寄存器读取，可考虑增加更多控制
+3. **Z_REAL / Z_VMAG 计算** - register.c 中定义了 REG_Z_REAL (0x3100) 和 REG_Z_VMAG (0x3200)，但未实现计算逻辑
+4. **USART2 BRR 时钟匹配** - usart.c 硬编码 BRR=0x116 (32MHz)，但 main.c 配置的 PCLK1 可能是 36MHz 或 18MHz
 
 ### 低优先级
 5. **DMA 传输** - `spi1_dma_transfer()` 当前为存根
 6. **错误处理增强** - SPI 通讯超时检测
 
-## 固件大小
-
-```
-RAM:   1,096 B  (49,152 B 可用)  →  2.2%
-Flash: 2,928 B  (262,144 B 可用) →  1.1%
-```
-
 ## Git 提交记录
 
 ```
+db70cc8 docs: 更新 goals.md 进度
 179841e feat: DNB1101温度读取 + 启动测量命令实现
 30bc468 docs: 添加 goals.md 项目进度跟踪
 a648e10 docs: 添加 README.md 项目文档
@@ -103,7 +130,11 @@ a2526d3 JCY8001 PlatformIO: DNB1101 SPI移植 + Modbus RTU + 完整驱动
 
 ## 下一步行动
 
-1. **在 GitHub 网页创建仓库**: https://github.com/new → 创建 `JCY8001_pio` 仓库
-2. **配置认证**后执行 `git push origin main`
-3. **烧录固件**到李俊镖的 Mac mini (100.97.44.46) 进行实测
-4. 使用 Modbus 工具读取寄存器验证通讯
+1. **GitHub**: 用户需要在 github.com 创建 `JCY8001_pio` 仓库，然后配置认证
+2. **硬件测试**: 烧录固件到 JCY8001 设备，通过 Modbus 工具验证:
+   - 读取 0x3000-0x3001 (Z_RE)
+   - 读取 0x3080-0x3081 (Z_IM)
+   - 读取 0x3300 (温度)
+   - 写入 0x4000 设置频率
+   - 写线圈 0x0000=1 启动测量
+3. **DNB1101 SPI 验证**: 用示波器/逻辑分析仪检查 SPI1 波形
