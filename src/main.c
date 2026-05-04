@@ -1,12 +1,11 @@
 /*
  * main.c - JCY8001 Firmware (PlatformIO 移植版)
  *
- * 基于 jcy8001_firmware v0.6 移植到 PlatformIO
+ * SPI Daisy-Chain 验证版本 — 枚举 DNB1101 + 持续 SPI 发送供示波器观察
  *
  * 功能:
- *   - USART2 Modbus RTU 通讯
- *   - SPI1 DNB1101 阻抗测量
- *   - 定期轮询 DNB1101 数据更新到 Modbus 寄存器
+ *   - SPI1 DNB1101 daisy-chain 协议枚举
+ *   - USART2 Modbus RTU 通讯 (轮询)
  */
 
 #include "../inc/register.h"
@@ -15,94 +14,84 @@
 #include "../inc/spi.h"
 #include "../inc/stm32f1xx.h"
 
-/* SystemInit 声明 - 在链接器脚本中定义 */
 extern void SystemInit(void);
 
-/* SysTick 延时计数 */
 static volatile uint32_t g_systick = 0;
 
-void SysTick_Handler(void) {
-    g_systick++;
-}
+void SysTick_Handler(void) { g_systick++; }
 
 void delay_ms(uint32_t ms) {
     uint32_t start = g_systick;
     while ((g_systick - start) < ms);
 }
 
-/*
- * System clock initialization
- * 使用 HSE 外部晶振 (8MHz)
- * HSE -> PLL x9 -> 72MHz
- * AHB = 72MHz, APB1 = 36MHz, APB2 = 72MHz
- */
 static void clock_init(void) {
-    /* 使能HSE */
-    RCC->CR |= RCC_CR_HSEON;
-    while (!(RCC->CR & RCC_CR_HSERDY));
-
-    /* PLL: HSE * 9 = 72MHz */
-    RCC->CFGR = (RCC->CFGR & ~((0xFUL << 18) | (0x3UL << 0))) | (9UL << 18) | (2UL << 0);
-    /* PLLSRC = HSE */
-    RCC->CFGR |= (1UL << 16);
-
-    /* 使能PLL */
-    RCC->CR |= (1UL << 24);
-    while (!(RCC->CR & (1UL << 25)));
-
-    /* 切换系统时钟到PLL */
-    RCC->CFGR = (RCC->CFGR & ~0x3UL) | (2UL << 0);
-    while (((RCC->CFGR >> 2) & 0x3UL) != 2);
-
-    /* 配置APB1分频 = /2 (36MHz) */
-    RCC->CFGR = (RCC->CFGR & ~0x1C00UL) | (0x4UL << 8);  /* PPRE1 = 100 = /2 */
-
-    /* SysTick: AHB / 8 = 9MHz, 9000 counts = 1ms */
-    SysTick->LOAD = 9000 - 1;
-    SysTick->CTRL = (1UL << 2) | (1UL << 1) | (1UL << 0);  /* AHB/8, enable, enable IRQ */
+    RCC->CFGR = (RCC->CFGR & ~0xFUL) | (0UL << 0);
+    while (((RCC->CFGR >> 2) & 0x3UL) != 0);
+    SysTick->LOAD = 1000 - 1;
+    SysTick->CTRL = (1UL << 2) | (1UL << 1) | (1UL << 0);
 }
 
 int main(void) {
-    /* 设置向量表到SRAM (VECT_TAB_SRAM) */
-    SCB->VTOR = SRAM_BASE;
-
-    /* 初始化时钟 */
     clock_init();
-
-    /* 初始化寄存器 */
     register_init();
-
-    /* 初始化 USART2 (Modbus 通讯) */
     usart2_init(115200);
-
-    /* 初始化 Modbus 协议栈 */
     modbus_init();
 
-    /* 启用全局中断 */
+    /* SPI1 init 必须在所有 GPIOA 操作之后！
+     * usart2_init() 也写 GPIOA_CRL (PA2/PA3)，确保 SPI 引脚配置是最后一次 */
+    spi1_init();
     __asm__ __volatile__("cpsie i");
 
-    /* 尝试读取DNB1101版本验证SPI通讯 */
-    uint8_t version = 0;
-    for (uint8_t i = 0; i < 3; i++) {
-        if (dnb1101_get_version(&version) == 0) {
-            break;  /* 成功读取，跳出循环 */
-        }
+    /* ── DNB1101 Daisy-Chain 枚举 ── */
+    uint8_t ic_ids[DNB11XX_MAX_CHAIN];
+    uint8_t ic_count = 0;
+
+    /* 等待 DNB1101 上电稳定 */
+    delay_ms(50);
+
+    for (int attempt = 0; attempt < 5; attempt++) {
+        ic_count = dnb1101_chain_enumerate(ic_ids, DNB11XX_MAX_CHAIN);
+        if (ic_count > 0) break;
         delay_ms(100);
     }
-    (void)version;  /* 防止未使用警告 */
 
-    /* 定期更新计数器 */
-    uint32_t update_tick = 0;
+    /* 枚举成功后发送 Init + SetMode */
+    if (ic_count > 0) {
+        dnb1101_chain_init();
+    }
 
-    /* 主循环 */
+    uint32_t last_spi = g_systick;
+    uint32_t last_modbus = g_systick;
+    uint8_t data_type = 0;  /* 轮询 GetData 类型 */
+
+    /* ── 主循环 ── */
     while (1) {
-        /* 处理 Modbus 帧 */
-        modbus_poll();
+        /* Modbus 轮询 */
+        if ((g_systick - last_modbus) >= 5) {
+            last_modbus = g_systick;
+            modbus_poll();
+        }
 
-        /* 每100ms更新一次DNB1101数据 */
-        if ((g_systick - update_tick) >= 100) {
-            update_tick = g_systick;
-            register_update_dnb1101();
+        /* 每 50ms 做一次 SPI 操作 (提高频率以便示波器捕获) */
+        if ((g_systick - last_spi) >= 50) {
+            last_spi = g_systick;
+
+            if (ic_count > 0) {
+                /* GetData 轮询: MainVolt(0) → Temp(2) → ProductVer(15) 循环 */
+                uint8_t resp[4];
+                uint8_t dt = 0;
+                switch (data_type) {
+                    case 0: dt = 0x00; break;  /* MainVolt */
+                    case 1: dt = 0x02; break;  /* MainCellTemp */
+                    case 2: dt = 0x0F; break;  /* ProductVer */
+                }
+                dnb1101_chain_get_data(ic_ids[0], dt, resp);
+                data_type = (data_type + 1) % 3;
+            } else {
+                /* 无 IC 发现 → 重新枚举 */
+                ic_count = dnb1101_chain_enumerate(ic_ids, DNB11XX_MAX_CHAIN);
+            }
         }
     }
 

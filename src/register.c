@@ -23,8 +23,7 @@ static volatile uint16_t g_sample_res = 0;         /* 采样电阻 0=20R */
 
 // ===== 寄存器初始化 =====
 void register_init(void) {
-    /* SPI1 初始化 (DNB1101) */
-    spi1_init();
+    /* SPI1 在 main.c 中单独初始化，这里不重复调用 */
 
     /* 默认值 */
     g_channel_count = 1;
