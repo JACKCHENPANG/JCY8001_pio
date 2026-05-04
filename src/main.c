@@ -230,13 +230,14 @@ void SystemClock_Config(void)
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    // 使用HSI内部振荡器 (64MHz)
+    // 使用HSI内部振荡器 (72MHz标准)
+    // HSI=8MHz, PLL=HSI*MUL9=8*9=72MHz (标准STM32F103RC频率)
     RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     RCC_OscInitStruct.HSIState = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
-    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;  // 8MHz / 2 * 16 = 64MHz
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;  // HSI直接输入PLL
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;  // 8MHz * 9 = 72MHz
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
     {
         while(1);
@@ -255,20 +256,39 @@ void SystemClock_Config(void)
     }
 }
 
+/**
+ * USART2初始化 - 直接寄存器写入 (绕过HAL,可靠)
+ * PCLK1 = 32MHz (64MHz HCLK / 2)
+ * USARTDIV = 32000000 / (16 × 115200) = 17.361
+ * BRR = (17 << 4) | 6 = 0x116
+ */
 static void MX_USART2_UART_Init(void)
 {
+    // 1. 使能时钟
+    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN;    // AFIO (复用功能)
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;  // USART2 on APB1
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;    // GPIOA
+
+    // 2. GPIO: PA2=AF_PP(TX), PA3=Input(RX)
+    // GPIOA_CRL: PA0[3:0]=0100, PA1[7:4]=0100, PA2[11:8]=1011, PA3[15:12]=1000
+    GPIOA->CRL = (GPIOA->CRL & 0xFFFF0000) | 0x00008B44;
+
+    // 3. 波特率 115200 @ 32MHz PCLK1
+    USART2->BRR = 0x0116;  // Mantissa=17, Fraction=6
+
+    // 4. 使能 USART (TE+RE+UE), 使能 RXNE 中断
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
+
+    // 5. 使能 USART2 中断
+    NVIC_SetPriority(USART2_IRQn, 0);
+    NVIC_EnableIRQ(USART2_IRQn);
+
+    // 6. 初始化 HAL 句柄状态 (供 HAL 函数使用)
     huart2.Instance = USART2;
     huart2.Init.BaudRate = 115200;
-    huart2.Init.WordLength = UART_WORDLENGTH_8B;
-    huart2.Init.StopBits = UART_STOPBITS_1;
-    huart2.Init.Parity = UART_PARITY_NONE;
-    huart2.Init.Mode = UART_MODE_TX_RX;
-    huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-    if (HAL_UART_Init(&huart2) != HAL_OK)
-    {
-        while(1);
-    }
+    huart2.gState = HAL_UART_STATE_READY;
+    huart2.RxState = HAL_UART_STATE_READY;
+    huart2.TxState = HAL_UART_STATE_READY;
 }
 
 static void MX_GPIO_Init(void)
@@ -298,10 +318,10 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-        // RX: PA3 - 浮空输入
+        // RX: PA3 - 浮空输入（应改为下拉，防止浮空噪声）
         GPIO_InitStruct.Pin = GPIO_PIN_3;
         GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Pull = GPIO_PULLDOWN;  // Modbus空闲时为0，配合RS485收发器
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
         // 使能接收中断
