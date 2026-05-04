@@ -1,6 +1,6 @@
 # JCY8001 PlatformIO 项目进度
 
-> 更新: 2026-05-04 (早8点47分)
+> 更新: 2026-05-04 (早9点18分)
 
 ## 任务总览
 
@@ -23,7 +23,7 @@
 
 **状态**: ✅ 已推送 (Everything up-to-date)
 
-**最新提交**: `eabf806 docs: 更新进度 - USART2 BRR修复，硬件实测标记为待完成`
+**最新提交**: `b507dc1 docs: 更新goals.md - 本次构建验证通过`
 
 ## 已完成功能
 
@@ -90,9 +90,38 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
 
 ## 本次构建
 
-- **编译时间**: 2026-05-04 08:47
-- **固件**: `.pio/build/genericSTM32F103RC/firmware.bin` (3420 bytes)
+- **编译时间**: 2026-05-04 09:18
+- **固件**: `.pio/build/genericSTM32F103RC/firmware.bin` (2928 bytes)
 - **构建状态**: ✅ SUCCESS
+
+## DNB1101 阻抗测量功能（本次移植完成）
+
+### spi.c 核心实现
+| 函数 | 说明 |
+|------|------|
+| `spi1_init()` | SPI1 Master, 1MHz, Mode 0, PA5/6/7 |
+| `spi1_transfer()` | 单字节全双工传输 |
+| `spi1_transfer_buf()` | 缓冲区传输 |
+| `dnb1101_read_reg()` | 读寄存器 (0x52 'R' + addr + len) |
+| `dnb1101_write_reg()` | 写寄存器 (0x57 'W' + addr + len + data) |
+| `dnb1101_get_version()` | 版本号读取 |
+| `dnb1101_get_status()` | 状态寄存器读取 |
+| `dnb1101_get_voltage()` | 电压读取 (4B大端序, ×0.1mV) |
+| `dnb1101_get_impedance()` | 阻抗读取 (8B: RE+IM, Q16.16大端序) |
+| `dnb1101_get_temperature()` | 温度读取 (2B大端序, int16, ×0.1°C) |
+| `dnb1101_start_measure()` | 启动测量 ('M' + freq + avg + checksum) |
+
+### register.c 集成
+| 功能 | 寄存器 | 说明 |
+|------|--------|------|
+| 阻抗实部 | 0x3000-0x3001 | g_z_re, Q16.16 |
+| 阻抗虚部 | 0x3080-0x3081 | g_z_im, Q16.16 |
+| 温度 | 0x3300 | g_temperature, ×0.1°C |
+| 电压 | 0x3340-0x3341 | g_voltage, ×0.1mV |
+| 状态 | 0x3380 | g_status |
+| 测量频率 | 0x4000 | g_zm_freq (保持寄存器) |
+| 平均次数 | 0x4040/0x4F01 | g_zm_avg_count |
+| 启动测量 | 线圈 0x0000 | 写1触发 dnb1101_start_measure() |
 
 ## 待完成 / 阻塞
 
