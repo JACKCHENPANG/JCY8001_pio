@@ -41,8 +41,10 @@ void usart2_init(int baudrate) {
     crl |=  (0x4UL << 12);   /* PA3: Input floating */
     GPIOA->CRL = crl;
 
-    /* 4. BRR = 0x116 -> 32MHz / 115200 (原版固件配置) */
-    USART2->BRR = 0x116;
+    /* 4. BRR = 0x138 -> 36MHz / 115200 (main.c: HSE×9=72MHz, APB1=/2 → PCLK1=36MHz)
+     *    BRR = 36000000 / 115200 = 312.5 → 0x138
+     *    36MHz / 312 = 115385 baud (+0.16% error, within ±2% tolerance for Modbus) */
+    USART2->BRR = 0x138;
 
     /* 5. CR1: UE + TE + RE + RXNEIE */
     USART2->CR1 = (1UL << 13) | (1UL << 3) | (1UL << 2) | (1UL << 5);
