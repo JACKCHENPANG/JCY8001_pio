@@ -11,7 +11,7 @@
 #include "stm32f1xx_hal.h"
 
 // 外部变量声明
-extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
 
 // 函数声明
 void USART1_Init(void);

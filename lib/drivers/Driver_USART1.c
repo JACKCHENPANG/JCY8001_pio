@@ -27,9 +27,9 @@ static volatile bool tx_complete = true;
  */
 void USART1_Init(void)
 {
-    // UART已在main.c中通过MX_USART1_UART_Init()初始化
+    // UART已在main.c中初始化
     // 这里启动接收中断
-    HAL_UART_Receive_IT(&huart1, &rx_buf[0], 1);
+    HAL_UART_Receive_IT(&huart2, &rx_buf[0], 1);
 }
 
 /**
@@ -45,8 +45,8 @@ void USART1_SetRxCallback(USART1_RxCallback_t callback)
  */
 void USART1_SetBaudRate(uint32_t baudrate)
 {
-    huart1.Init.BaudRate = baudrate;
-    HAL_UART_Init(&huart1);
+    huart2.Init.BaudRate = baudrate;
+    HAL_UART_Init(&huart2);
 }
 
 /**
@@ -58,10 +58,10 @@ void USART1_SetBaudRate(uint32_t baudrate)
 void USART1_Send(uint8_t *p, uint16_t Length, bool isWaiting)
 {
     if (isWaiting) {
-        HAL_UART_Transmit(&huart1, p, Length, 1000);
+        HAL_UART_Transmit(&huart2, p, Length, 1000);
     } else {
         tx_complete = false;
-        HAL_UART_Transmit_IT(&huart1, p, Length);
+        HAL_UART_Transmit_IT(&huart2, p, Length);
     }
 }
 
@@ -71,7 +71,7 @@ void USART1_Send(uint8_t *p, uint16_t Length, bool isWaiting)
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART1) {
+    if (huart->Instance == USART2) {
         last_rx_tick = HAL_GetTick();
         rx_busy = true;
         
@@ -80,17 +80,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         
         // 继续接收下一个字节
         if (rx_count < RX_BUF_LEN) {
-            HAL_UART_Receive_IT(&huart1, &rx_buf[rx_count], 1);
+            HAL_UART_Receive_IT(&huart2, &rx_buf[rx_count], 1);
         }
     }
 }
 
-/**
- * UART发送完成回调
- */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART1) {
+    if (huart->Instance == USART2) {
         tx_complete = true;
     }
 }
@@ -110,6 +107,6 @@ void USART1_ProcessIdle(void)
         // 重置接收状态
         rx_count = 0;
         rx_busy = false;
-        HAL_UART_Receive_IT(&huart1, &rx_buf[0], 1);
+        HAL_UART_Receive_IT(&huart2, &rx_buf[0], 1);
     }
 }

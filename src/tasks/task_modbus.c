@@ -12,7 +12,7 @@
 #include "Modbus.h"
 #include "Driver_USART1.h"
 
-extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
 
 void vTaskModbus(void *pvParameters)
 {

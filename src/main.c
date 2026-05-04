@@ -26,11 +26,11 @@
 void SystemClock_Config(void);
 // GPIO初始化
 static void MX_GPIO_Init(void);
-// USART1初始化
-static void MX_USART1_UART_Init(void);
+// USART2初始化 (CP2102 on PA2/PA3)
+static void MX_USART2_UART_Init(void);
 
 // UART句柄
-UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
 
 // Stage 3: DNB11xx IC数量
 uint8_t dnb_ic_count = 0;
@@ -159,7 +159,7 @@ static void eeprom_report_status(void)
         default: len = snprintf(buf, sizeof(buf), "EEPROM: UNKNOWN status=%d\r\n", st); break;
     }
 
-    HAL_UART_Transmit(&huart1, (uint8_t*)buf, len, 100);
+    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
 }
 
 /**
@@ -169,7 +169,7 @@ static void dnb_report_status(void)
 {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "DNB11xx: ICs=%d\r\n", dnb_ic_count);
-    HAL_UART_Transmit(&huart1, (uint8_t*)buf, len, 100);
+    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
 }
 
 int main(void)
@@ -183,10 +183,10 @@ int main(void)
     // GPIO初始化
     MX_GPIO_Init();
 
-    // USART1初始化
-    MX_USART1_UART_Init();
+    // USART2初始化 (CP2102, PA2/PA3)
+    MX_USART2_UART_Init();
 
-    // 初始化USART1驱动
+    // 初始化USART驱动
     USART1_Init();
     USART1_SetRxCallback(usart1_rx_callback);
 
@@ -216,7 +216,7 @@ int main(void)
 
     // 发送启动消息
     const char *msg = "JCY8001 FreeRTOS Starting\r\n";
-    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
 
     // 启动FreeRTOS调度器 (永不返回)
     vTaskStartScheduler();
@@ -255,17 +255,17 @@ void SystemClock_Config(void)
     }
 }
 
-static void MX_USART1_UART_Init(void)
+static void MX_USART2_UART_Init(void)
 {
-    huart1.Instance = USART1;
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-    if (HAL_UART_Init(&huart1) != HAL_OK)
+    huart2.Instance = USART2;
+    huart2.Init.BaudRate = 115200;
+    huart2.Init.WordLength = UART_WORDLENGTH_8B;
+    huart2.Init.StopBits = UART_STOPBITS_1;
+    huart2.Init.Parity = UART_PARITY_NONE;
+    huart2.Init.Mode = UART_MODE_TX_RX;
+    huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+    if (HAL_UART_Init(&huart2) != HAL_OK)
     {
         while(1);
     }
@@ -286,27 +286,27 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    if (huart->Instance == USART1)
+    if (huart->Instance == USART2)
     {
         // 使能时钟
-        __HAL_RCC_USART1_CLK_ENABLE();
+        __HAL_RCC_USART2_CLK_ENABLE();
         __HAL_RCC_GPIOA_CLK_ENABLE();
 
-        // TX: PA9 - 复用推挽输出
-        GPIO_InitStruct.Pin = GPIO_PIN_9;
+        // TX: PA2 - 复用推挽输出
+        GPIO_InitStruct.Pin = GPIO_PIN_2;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-        // RX: PA10 - 浮空输入
-        GPIO_InitStruct.Pin = GPIO_PIN_10;
+        // RX: PA3 - 浮空输入
+        GPIO_InitStruct.Pin = GPIO_PIN_3;
         GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
         // 使能接收中断
-        HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
-        HAL_NVIC_EnableIRQ(USART1_IRQn);
+        HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+        HAL_NVIC_EnableIRQ(USART2_IRQn);
     }
 }
 
@@ -319,9 +319,9 @@ void SysTick_Handler(void)
 }
 
 /**
- * USART1中断处理
+ * USART2中断处理
  */
-void USART1_IRQHandler(void)
+void USART2_IRQHandler(void)
 {
-    HAL_UART_IRQHandler(&huart1);
+    HAL_UART_IRQHandler(&huart2);
 }
