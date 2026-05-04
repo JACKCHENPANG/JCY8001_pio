@@ -1,6 +1,6 @@
 # JCY8001 PlatformIO 项目进度
 
-> 更新: 2026-05-04 (早8点)
+> 更新: 2026-05-04 (早8点47分)
 
 ## 任务总览
 
@@ -17,22 +17,13 @@
 | GitHub Push | ✅ 完成 | 推送至 JACKCHENPANG/JCY8001_pio.git |
 | DNB1101 SPI 通讯验证 | ⏳ 待硬件实测 | 需烧录到设备验证 |
 
-## GitHub 推送状态（2026-05-04 早8点）
+## GitHub 推送状态
 
 **远程仓库**: `git@github.com:JACKCHENPANG/JCY8001_pio.git`
 
-**SSH 认证**: ✅ 工作正常（认证用户: JACKCHENPANG）
+**状态**: ✅ 已推送 (Everything up-to-date)
 
-**推送结果**: ✅ 成功
-
-**操作记录**:
-1. 远程 `origin` 原指向 `jcystech/JCY8001_pio`（该组织不存在，仓库404）
-2. 修改 remote 为 `JACKCHENPANG/JCY8001_pio`（该仓库已存在于 GitHub）
-3. 拉取远程初始提交，与本地合并解决冲突（platformio.ini / src/main.c）
-4. 清理 `src/tasks/` 中从远程合并进来的 FreeRTOS 文件（bare-metal 不需要）
-5. 推送完成
-
-**仓库地址**: https://github.com/JACKCHENPANG/JCY8001_pio
+**最新提交**: `eabf806 docs: 更新进度 - USART2 BRR修复，硬件实测标记为待完成`
 
 ## 已完成功能
 
@@ -64,7 +55,7 @@
 
 ### 固件架构 (main.c) ✅
 - [x] HSE 时钟配置 (8MHz × 9 = 72MHz)
-- [x] USART2 Modbus 通讯 (115200 8N1)
+- [x] USART2 Modbus 通讯 (115200 8N1, BRR=0x138)
 - [x] SysTick 延时
 - [x] 全局中断启用
 - [x] DNB1101 版本预检查（启动时验证 SPI 握手）
@@ -86,16 +77,22 @@
 | src/modbus.c | 321 | Modbus RTU 协议栈 |
 | src/register.c | 148 | 寄存器管理 |
 | src/main.c | 110 | 主程序 |
-| src/usart.c | 84 | USART2 驱动 |
+| src/usart.c | 86 | USART2 驱动 |
 | src/crc16.c | 27 | CRC16 计算 |
 | inc/stm32f1xx.h | 268 | 寄存器定义 |
-| **总计** | **1388** | |
+| **总计** | **1390** | |
 
 **固件大小**:
 ```
 RAM:   1,096 B  (49,152 B 可用)  →  2.2%
 Flash: 2,928 B  (262,144 B 可用) →  1.1%
 ```
+
+## 本次构建
+
+- **编译时间**: 2026-05-04 08:47
+- **固件**: `.pio/build/genericSTM32F103RC/firmware.bin` (3420 bytes)
+- **构建状态**: ✅ SUCCESS
 
 ## 待完成 / 阻塞
 
@@ -104,14 +101,18 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
    - Modbus 通讯是否正常（USART2 BRR 已修复为 0x138）
    - DNB1101 SPI 握手
    - 阻抗数据正确性
-4. **Z_REAL / Z_VMAG 计算** - register.c 中定义了 REG_Z_REAL (0x3100) 和 REG_Z_VMAG (0x3200)，但 `read_input_reg()` 返回 0，可选实现
+2. **Z_REAL / Z_VMAG 计算** - register.c 中定义了 REG_Z_REAL (0x3100) 和 REG_Z_VMAG (0x3200)，但 `read_input_reg()` 返回 0，可选实现
 
 ### 低优先级
-5. **DMA 传输** - `spi1_dma_transfer()` 当前为存根
-6. **错误处理增强** - SPI 通讯超时检测
+3. **DMA 传输** - `spi1_dma_transfer()` 当前为存根
+4. **错误处理增强** - SPI 通讯超时检测
+
 ## Git 提交记录
 
 ```
+eabf806 docs: 更新进度 - USART2 BRR修复，硬件实测标记为待完成
+152b0d6 fix: USART2 BRR 0x116→0x138 for PCLK1=36MHz (HSE×9)
+543bee6 docs: 更新 goals.md - GitHub push完成，清理FreeRTOS文件
 2226c32 chore: remove FreeRTOS task files (bare-metal impl)
 8cee9b9 merge: resolve conflicts by taking local version
 c3c2b63 docs: 更新 goals.md - GitHub push 阻塞根因分析 + jcystech org 不存在
