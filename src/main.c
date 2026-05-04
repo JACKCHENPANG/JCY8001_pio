@@ -291,9 +291,10 @@ int main(void)
     // 初始化 USART2
     usart2_init();
 
-    // 初始化 SPI1 (不枚举, 避免阻塞主循环)
+    // 初始化 SPI1 + DNB1101 枚举
     spi1_init();
-    // dnb_ic_count = dnb_enumerate();  // TODO: 移到主循环中延迟执行
+    dnb_ic_count = dnb_enumerate();
+    if (dnb_ic_count > 0) jcy_ch_count = dnb_ic_count;
 
     // 主循环: 轮询USART2接收Modbus帧
     uint8_t  frame_buf[256];
