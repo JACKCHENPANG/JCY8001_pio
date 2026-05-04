@@ -13,8 +13,9 @@
 | 启动测量命令 | ✅ 完成 | write_coil(COIL_START_MEASURE) 触发测量 |
 | Modbus RTU 协议栈 | ✅ 完成 | 寄存器映射完成 |
 | 编译验证 | ✅ 通过 | RAM 1.1KB / 49KB, Flash 2.9KB / 256KB |
-| DNB1101 SPI 通讯验证 | ✅ 代码完成 | 代码审查通过，待硬件实测 |
+| USART2 BRR 时钟匹配 | ✅ 修复 | 0x116→0x138 (PCLK1=36MHz) |
 | GitHub Push | ✅ 完成 | 推送至 JACKCHENPANG/JCY8001_pio.git |
+| DNB1101 SPI 通讯验证 | ⏳ 待硬件实测 | 需烧录到设备验证 |
 
 ## GitHub 推送状态（2026-05-04 早8点）
 
@@ -99,14 +100,10 @@ Flash: 2,928 B  (262,144 B 可用) →  1.1%
 ## 待完成 / 阻塞
 
 ### 高优先级
-1. **GitHub Push** - 需要用户运行以下任一方案（见上文）
-2. **硬件实测** - 烧录到 JCY8001 设备验证:
-   - Modbus 通讯是否正常
+1. **硬件实测** - 烧录到 JCY8001 设备验证:
+   - Modbus 通讯是否正常（USART2 BRR 已修复为 0x138）
    - DNB1101 SPI 握手
    - 阻抗数据正确性
-
-### 中优先级
-3. **USART2 BRR 时钟匹配** - usart.c 硬编码 BRR=0x116 (32MHz)，但 main.c 配置的 PCLK1 可能是 36MHz 或 18MHz，需验证
 4. **Z_REAL / Z_VMAG 计算** - register.c 中定义了 REG_Z_REAL (0x3100) 和 REG_Z_VMAG (0x3200)，但 `read_input_reg()` 返回 0，可选实现
 
 ### 低优先级
