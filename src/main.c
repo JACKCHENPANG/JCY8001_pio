@@ -83,6 +83,130 @@ static void usart2_init(void) {
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 }
 
+/* ── SPI1 (DNB1101) ─────────────────────────────────────────────────────── */
+
+#define DNB11XX_MAX_CHAIN 9
+
+static uint8_t dnb_ic_count = 0;
+
+static void spi1_init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_SPI1EN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPBEN;
+
+    // PA5=SCK(AF_PP), PA6=MISO(Input), PA7=MOSI(AF_PP)
+    // 保留 PA0-PA3 (USART2 已配置)
+    GPIOA->CRL = (GPIOA->CRL & 0x0000FFFF) | 0xB4B00000;
+
+    // PB2 = NSS (GPIO output, push-pull)
+    GPIOB->CRL = (GPIOB->CRL & 0xFFFFF0FF) | 0x00000300;
+    GPIOB->BSRR = GPIO_BSRR_BS2;  // NSS high
+
+    // SPI1: Master, CPOL=0, CPHA=0, BR=fPCLK/8=1MHz, MSB first
+    // CR1: SSM(bit9)+SSI(bit8)+SPE(bit6)+BR=010(bit4)+MSTR(bit2) = 0x0354
+    SPI1->CR1 = 0x0354;
+}
+
+static void spi1_nss_low(void)  { GPIOB->BRR  = GPIO_BRR_BR2; }
+static void spi1_nss_high(void) { GPIOB->BSRR = GPIO_BSRR_BS2; }
+
+static uint8_t spi1_transfer(uint8_t tx) {
+    uint32_t timeout = 10000;
+    while (!(SPI1->SR & SPI_SR_TXE) && --timeout);
+    if (!timeout) return 0xFF;
+    *(volatile uint8_t*)&SPI1->DR = tx;
+    timeout = 10000;
+    while (!(SPI1->SR & SPI_SR_RXNE) && --timeout);
+    if (!timeout) return 0xFF;
+    return *(volatile uint8_t*)&SPI1->DR;
+}
+
+static void spi1_full_duplex(uint8_t *tx, uint8_t *rx, uint32_t len) {
+    spi1_nss_low();
+    for (uint32_t i = 0; i < len; i++)
+        rx[i] = spi1_transfer(tx[i]);
+    spi1_nss_high();
+}
+
+/* ── CRC4 (DNB1101 protocol) ────────────────────────────────────────────── */
+
+static const uint8_t crc4_table[16] = {
+    0x00, 0x5e, 0xbc, 0xe2, 0x61, 0x3f, 0xdd, 0x83,
+    0xc2, 0x9c, 0x7e, 0x20, 0xa3, 0xfd, 0x1f, 0x41,
+};
+
+static uint8_t crc4(uint8_t *p, uint32_t len) {
+    uint8_t crc = 0;
+    for (uint32_t i = 0; i < len; i++)
+        crc = crc4_table[crc ^ p[i]];
+    return crc;
+}
+
+/* ── DNB1101 Command Protocol ───────────────────────────────────────────── */
+
+#define CMD_ENUMERATE 0x00
+#define CMD_GETDATA   0x0E
+
+/* Build 4-byte frame for one IC slot.
+ * Command format (SPI byte order): [0x0F][ID][CMD<<4|DataH][DataL|CRC4<<4]
+ * CRC4 computed over [0x0F][ID][CMD<<4|DataH] */
+static void dnb_build_frame(uint8_t *frame, uint8_t ics,
+                             uint8_t id, uint8_t cmd, uint16_t data) {
+    for (uint8_t s = 0; s < ics; s++) {
+        uint8_t *f = &frame[s * 4];
+        f[0] = 0x0F;                          // Header
+        f[1] = id;                            // ID
+        f[2] = (cmd << 4) | ((data >> 8) & 0x0F);  // CMD | Data[15:12]
+        f[3] = data & 0xFF;                   // Data[7:0] (low nibble)
+        uint8_t c = crc4(f, 3);               // CRC4 over header+ID+cmdbyte
+        f[3] = (f[3] & 0x0F) | (c << 4);      // CRC in upper nibble
+    }
+}
+
+static uint8_t dnb_enumerate(void) {
+    uint8_t tx[DNB11XX_MAX_CHAIN * 4];
+    uint8_t rx[DNB11XX_MAX_CHAIN * 4];
+    uint8_t found = 0;
+
+    /* Clear TX buffer */
+    for (uint8_t i = 0; i < sizeof(tx); i++) tx[i] = 0x00;
+
+    /* Build enumerate commands: one per IC slot */
+    for (uint8_t s = 0; s < DNB11XX_MAX_CHAIN; s++) {
+        dnb_build_frame(&tx[s * 4], 1, 0xFF, CMD_ENUMERATE, 0);
+    }
+
+    /* Pad remaining slots with 0xFF */
+    /* (already done - each frame is 4 bytes for 1 IC, rest 0x00) */
+    
+    /* Actually we need to shift: enumerate should address each slot individually.
+     * The IC at position S in the chain expects S*4 bytes of 0x00 before its command.
+     * We send DNB11XX_MAX_CHAIN * 4 bytes total. */
+    
+    /* Build cumulative frame: pad before target IC with 0x00 */
+    for (uint8_t s = 0; s < DNB11XX_MAX_CHAIN; s++) {
+        uint8_t base = s * 4;
+        /* Clear before this slot */
+        for (uint8_t b = 0; b < base + 4; b++) tx[b] = 0x00;
+        /* Put command at this slot */
+        dnb_build_frame(&tx[base], 1, 0xFF, CMD_ENUMERATE, 0);
+        /* Fill after this slot with 0xFF */
+        for (uint8_t b = base + 4; b < DNB11XX_MAX_CHAIN * 4; b++)
+            tx[b] = 0xFF;
+
+        /* Clear RX */
+        for (uint8_t i = 0; i < sizeof(rx); i++) rx[i] = 0xFF;
+
+        /* Transfer this one slot */
+        spi1_full_duplex(tx, rx, DNB11XX_MAX_CHAIN * 4);
+
+        /* Check response: ID byte at offset s*4+1 */
+        uint8_t id_byte = rx[base + 1];
+        if (id_byte != 0xFF && id_byte != 0x00)
+            found++;
+    }
+
+    return found;
+}
+
 /* ── CRC16 Modbus ───────────────────────────────────────────────────────── */
 
 static uint16_t crc16(const uint8_t *data, uint16_t len) {
@@ -167,9 +291,9 @@ int main(void)
     // 初始化 USART2
     usart2_init();
 
-    // 发送启动消息
-    usart2_send('S'); usart2_send('T'); usart2_send('A');
-    usart2_send('R'); usart2_send('T'); usart2_send('\r'); usart2_send('\n');
+    // 初始化 SPI1 (不枚举, 避免阻塞主循环)
+    spi1_init();
+    // dnb_ic_count = dnb_enumerate();  // TODO: 移到主循环中延迟执行
 
     // 主循环: 轮询USART2接收Modbus帧
     uint8_t  frame_buf[256];
