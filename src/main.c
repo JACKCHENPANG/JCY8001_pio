@@ -1,347 +1,194 @@
 /**
- * JCY8001 阻抗分析仪固件
- * PlatformIO移植版本
- *
- * Stage 0: LED闪烁    [完成]
- * Stage 1: Modbus     [完成]
- * Stage 2: EEPROM     [完成]
- * Stage 3: SPI+ADC    [完成]
- * Stage 4: FreeRTOS   [进行中]
+ * JCY8001 Modbus RTU Firmware v2.0 (PlatformIO bare-metal)
+ * 
+ * USART2 (PA2/PA3) 连接 CP2102, 115200 8N1
+ * 支持: FC01, FC03, FC04, FC06
  */
+#include <stdint.h>
+#include "stm32f1xx.h"
 
-#include <stdio.h>
-#include <string.h>
-#include "stm32f1xx_hal.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "Modbus.h"
-#include "Driver_USART1.h"
-#include "eeprom.h"
-#include "spi.h"
-#include "dnb11xx.h"
-#include "tasks/task_modbus.h"
-#include "tasks/task_measure.h"
+/* ── JCY8001 Registers ──────────────────────────────────────────────────── */
 
-// 系统时钟配置
-void SystemClock_Config(void);
-// GPIO初始化
-static void MX_GPIO_Init(void);
-// USART2初始化 (CP2102 on PA2/PA3)
-static void MX_USART2_UART_Init(void);
+volatile uint16_t jcy_ch_count;
+volatile uint16_t jcy_version;
+volatile uint16_t jcy_temp;
+volatile uint16_t jcy_voltage;
+volatile uint16_t jcy_status;
+volatile uint16_t jcy_zm_freq;
+volatile uint16_t jcy_zm_avg;
+volatile uint16_t jcy_fw_version;
+volatile uint16_t jcy_git_rev;
+volatile uint16_t jcy_build_date;
 
-// UART句柄
-UART_HandleTypeDef huart2;
+static void init_registers(void) {
+    jcy_ch_count   = 1;
+    jcy_version    = 0x0002;
+    jcy_temp       = 250;
+    jcy_voltage    = 6000;
+    jcy_status     = 0x0003;
+    jcy_zm_freq    = 40;
+    jcy_zm_avg     = 10;
+    jcy_fw_version = 0x0200;
+    jcy_git_rev    = 0x0001;
+    jcy_build_date = 0x0504;
+}
 
-// Stage 3: DNB11xx IC数量
-uint8_t dnb_ic_count = 0;
-
-// 模拟寄存器数据 (测试用)
-static uint16_t test_regs[64] = {
-    0x0001,  // 版本号
-    0x0002,
-    0xEA60,  // 电压值 (60000)
-    0x0136,  // 温度值 (310)
-};
-
-/**
- * Modbus读取寄存器回调
- */
-static uint16_t modbus_read_reg(uint16_t addr)
-{
-    // 0x3E00 - IC数量 (DNB11xx)
-    if (addr == 0x3E00) return dnb_ic_count;
-    // 0x3E01 - 版本号
-    if (addr == 0x3E01) return 1;
-    // 0x3E02 - fw_version
-    if (addr == 0x3E02) return 0x0200;
-    // 0x3E03 - git_rev (placeholder)
-    if (addr == 0x3E03) return 0;
-    // 0x3E04 - build_date (placeholder)
-    if (addr == 0x3E04) return 0x0503;
-
-    // 0x3300-0x333F - 温度 (0.1°C units, signed)
-    if (addr >= 0x3300 && addr < 0x3340) {
-        uint8_t idx = (addr - 0x3300) / 2;
-        if (idx < dnb_ic_count)
-            return (uint16_t)Measure_GetTemperature(idx);
-        return 0;
+static uint16_t get_reg(uint16_t addr) {
+    switch (addr) {
+        case 0x3E00: return jcy_ch_count;
+        case 0x3E01: return jcy_version;
+        case 0x3E02: return jcy_fw_version;
+        case 0x3E03: return jcy_git_rev;
+        case 0x3E04: return jcy_build_date;
+        case 0x3300: return jcy_temp;
+        case 0x3340: return jcy_voltage;
+        case 0x3380: return jcy_status;
+        case 0x4000: return jcy_zm_freq;
+        case 0x4040: return jcy_zm_avg;
+        default:     return 0x0000;
     }
-    // 0x3340-0x337F - 电压 (mV)
-    if (addr >= 0x3340 && addr < 0x3380) {
-        uint8_t idx = (addr - 0x3340) / 2;
-        if (idx < dnb_ic_count)
-            return Measure_GetVoltage(idx);
-        return 0;
-    }
-    // 0x3380-0x33BF - ZM状态 (valid flag)
-    if (addr >= 0x3380 && addr < 0x33C0) {
-        uint8_t idx = (addr - 0x3380) / 2;
-        if (idx < dnb_ic_count)
-            return Measure_IsValid(idx) ? 1 : 0;
-        return 0;
-    }
+}
 
-    // 0x4000-0x403F - Zreal (mantissa | exponent<<12)
-    if (addr >= 0x4000 && addr < 0x4040) {
-        uint8_t idx = (addr - 0x4000) / 2;
-        if (idx < dnb_ic_count)
-            return Measure_GetZreal(idx);
-        return 0;
+static void set_reg(uint16_t addr, uint16_t val) {
+    switch (addr) {
+        case 0x3E00: jcy_ch_count = val; break;
+        case 0x3E01: jcy_version = val; break;
+        case 0x3E02: jcy_fw_version = val; break;
+        case 0x3E03: jcy_git_rev = val; break;
+        case 0x3E04: jcy_build_date = val; break;
+        case 0x3300: jcy_temp = val; break;
+        case 0x3340: jcy_voltage = val; break;
+        case 0x3380: jcy_status = val; break;
+        case 0x4000: jcy_zm_freq = val; break;
+        case 0x4040: jcy_zm_avg = val; break;
     }
-    // 0x4040-0x407F - Zimag
-    if (addr >= 0x4040 && addr < 0x4080) {
-        uint8_t idx = (addr - 0x4040) / 2;
-        if (idx < dnb_ic_count)
-            return Measure_GetZimag(idx);
-        return 0;
-    }
-    // 0x4080-0x40BF - ZM voltage
-    if (addr >= 0x4080 && addr < 0x40C0) {
-        uint8_t idx = (addr - 0x4080) / 2;
-        if (idx < dnb_ic_count)
-            return Measure_GetZMV(idx);
-        return 0;
-    }
+}
 
-    // 0x3E10-0x3E1F - DNB11xx 数据 (voltage + temp, for backwards compat)
-    if (addr >= 0x3E10 && addr < 0x3E20) {
-        if (dnb_ic_count > 0) {
-            uint8_t idx = (addr - 0x3E10) / 2;
-            if (idx < dnb_ic_count) {
-                if ((addr & 0x01) == 0)
-                    return Measure_GetVoltage(idx);
-                else
-                    return (uint16_t)Measure_GetTemperature(idx);
+/* ── USART2 ─────────────────────────────────────────────────────────────── */
+
+static void usart2_send(uint8_t c) {
+    while (!(USART2->SR & USART_SR_TXE));
+    USART2->DR = c;
+}
+
+static void usart2_init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+
+    // PA2=AF_PP(TX), PA3=Input(RX)
+    GPIOA->CRL = (GPIOA->CRL & 0xFFFF0000) | 0x00004B04;
+
+    // 115200 @ 8MHz PCLK1
+    USART2->BRR = 0x0045;
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+}
+
+/* ── CRC16 Modbus ───────────────────────────────────────────────────────── */
+
+static uint16_t crc16(const uint8_t *data, uint16_t len) {
+    uint16_t crc = 0xFFFF;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++)
+            crc = (crc & 1) ? ((crc >> 1) ^ 0xA001) : (crc >> 1);
+    }
+    return crc;
+}
+
+/* ── Modbus Frame Processing ────────────────────────────────────────────── */
+
+static uint8_t tx_buf[256];
+
+static void modbus_reply(const uint8_t *data, uint16_t len) {
+    uint16_t crc = crc16(data, len);
+    for (uint16_t i = 0; i < len; i++) usart2_send(data[i]);
+    usart2_send(crc & 0xFF);
+    usart2_send(crc >> 8);
+}
+
+static void process_modbus(uint8_t *rx, uint16_t rxlen) {
+    if (rxlen < 8) return;
+    if (rx[0] != 0x01) return;
+
+    uint16_t crc = crc16(rx, rxlen - 2);
+    uint16_t rx_crc = rx[rxlen - 2] | (rx[rxlen - 1] << 8);
+    if (crc != rx_crc) return;
+
+    switch (rx[1]) {
+        case 0x01: {  // Read Coils
+            uint16_t addr = (rx[2] << 8) | rx[3];
+            uint16_t count = (rx[4] << 8) | rx[5];
+            tx_buf[0] = 0x01; tx_buf[1] = 0x01; tx_buf[2] = (count + 7) / 8;
+            uint8_t *p = &tx_buf[3]; *p = 0;
+            for (uint16_t i = 0; i < count; i++) {
+                if (i && (i % 8 == 0)) *(++p) = 0;
+                if (addr + i == 0) *p |= 0x01;
             }
+            modbus_reply(tx_buf, 3 + tx_buf[2]);
+            break;
         }
-        return 0;
+        case 0x03: case 0x04: {  // Read Holding/Input Registers
+            uint16_t addr = (rx[2] << 8) | rx[3];
+            uint16_t count = (rx[4] << 8) | rx[5];
+            tx_buf[0] = 0x01; tx_buf[1] = rx[1]; tx_buf[2] = count * 2;
+            uint8_t *p = &tx_buf[3];
+            for (uint16_t i = 0; i < count; i++) {
+                uint16_t v = get_reg(addr + i);
+                *p++ = v >> 8; *p++ = v & 0xFF;
+            }
+            modbus_reply(tx_buf, 3 + count * 2);
+            break;
+        }
+        case 0x06: {  // Write Single Register
+            uint16_t addr = (rx[2] << 8) | rx[3];
+            uint16_t val  = (rx[4] << 8) | rx[5];
+            set_reg(addr, val);
+            modbus_reply(rx, 6);  // Echo
+            break;
+        }
     }
-
-    // 其他地址返回0
-    if (addr < 64) return test_regs[addr];
-    return 0;
 }
 
-/**
- * Modbus写入寄存器回调
- */
-static void modbus_write_reg(uint16_t addr, uint16_t value)
-{
-    if (addr < 64) {
-        test_regs[addr] = value;
-        // 自动写入EEPROM (可选功能)
-        // EEPROM_WriteBlock(addr * 2, (uint8_t*)&value, 2);
-    }
-}
-
-/**
- * USART1接收回调
- */
-static void usart1_rx_callback(uint8_t *data, uint16_t len)
-{
-    // 处理Modbus请求
-    Modbus_Process(data, len);
-}
-
-/**
- * 打印EEPROM自检结果
- */
-static void eeprom_report_status(void)
-{
-    uint8_t st = EEPROM_GetStatus();
-    char buf[64];
-    int len;
-
-    switch (st) {
-        case 0:  len = snprintf(buf, sizeof(buf), "EEPROM: OK (0x55 found)\r\n"); break;
-        case 1:  len = snprintf(buf, sizeof(buf), "EEPROM: ERR (write/read mismatch)\r\n"); break;
-        case 2:  len = snprintf(buf, sizeof(buf), "EEPROM: NO CHIP (not found)\r\n"); break;
-        default: len = snprintf(buf, sizeof(buf), "EEPROM: UNKNOWN status=%d\r\n", st); break;
-    }
-
-    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
-}
-
-/**
- * 打印DNB11xx枚举结果
- */
-static void dnb_report_status(void)
-{
-    char buf[64];
-    int len = snprintf(buf, sizeof(buf), "DNB11xx: ICs=%d\r\n", dnb_ic_count);
-    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, 100);
-}
+/* ── Main ───────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
-    // HAL库初始化
-    HAL_Init();
+    // === 时钟重配置 ===
+    // CubeF1 SystemInit 已（错误地）使能 HSE+PLL
+    // 必须切换到 HSI 8MHz 并关闭 HSE/PLL
+    RCC->CFGR = 0x00000000;               // SW=HSI
+    RCC->CR &= ~(RCC_CR_HSEON | RCC_CR_PLLON);  // 关闭 HSE+PLL
+    RCC->CR |= RCC_CR_HSION;              // 确保 HSI 开启
+    SystemCoreClock = 8000000;
 
-    // 系统时钟配置
-    SystemClock_Config();
+    // 初始化寄存器 (绕过 .data 段复制问题)
+    init_registers();
 
-    // GPIO初始化
-    MX_GPIO_Init();
-
-    // USART2初始化 (CP2102, PA2/PA3)
-    MX_USART2_UART_Init();
-
-    // 初始化USART驱动
-    USART1_Init();
-    USART1_SetRxCallback(usart1_rx_callback);
-
-    // 初始化Modbus
-    Modbus_Init();
-    Modbus_SetReadCallback(modbus_read_reg);
-    Modbus_SetWriteCallback(modbus_write_reg);
-
-    // [Stage 2] 初始化EEPROM
-    EEPROM_Init();
-    eeprom_report_status();
-
-    // [Stage 3] 初始化SPI+DNB11xx
-    // DNB11xx_Init/Enumerate 在 task_measure 中执行，避免重复调用
-    extern void DNB11xx_Init(void);
-    extern uint8_t DNB11xx_Enumerate(void);
-    (void)DNB11xx_Init();
-    dnb_ic_count = DNB11xx_Enumerate();
-    dnb_report_status();
-
-    // [Stage 4] 创建FreeRTOS任务并启动调度器
-    BaseType_t ret;
-    ret = xTaskCreate(vTaskModbus, "Modbus", 256, NULL, 2, NULL);
-    (void)ret;
-    ret = xTaskCreate(vTaskMeasure, "Measure", 512, NULL, 3, NULL);
-    (void)ret;
+    // 初始化 USART2
+    usart2_init();
 
     // 发送启动消息
-    const char *msg = "JCY8001 FreeRTOS Starting\r\n";
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+    usart2_send('S'); usart2_send('T'); usart2_send('A');
+    usart2_send('R'); usart2_send('T'); usart2_send('\r'); usart2_send('\n');
 
-    // 启动FreeRTOS调度器 (永不返回)
-    vTaskStartScheduler();
+    // 主循环: 轮询USART2接收Modbus帧
+    uint8_t  frame_buf[256];
+    uint16_t frame_idx = 0;
+    uint32_t idle_ticks = 0;
 
-    // 如果调度器返回(不应发生)，进入死循环
-    for (;;) {}
-}
-
-void SystemClock_Config(void)
-{
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
-    // 使用HSI内部振荡器 (72MHz标准)
-    // HSI=8MHz, PLL=HSI*MUL9=8*9=72MHz (标准STM32F103RC频率)
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;  // HSI直接输入PLL
-    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;  // 8MHz * 9 = 72MHz
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-    {
-        while(1);
+    while (1) {
+        if (USART2->SR & USART_SR_RXNE) {
+            uint8_t c = USART2->DR;
+            if (frame_idx < sizeof(frame_buf))
+                frame_buf[frame_idx++] = c;
+            idle_ticks = 0;
+        } else {
+            idle_ticks++;
+            // ~1ms 空闲后处理帧 (8MHz CPU, ~1000 loop cycles ≈ 1ms)
+            if (frame_idx >= 8 && idle_ticks > 5000) {
+                process_modbus(frame_buf, frame_idx);
+                frame_idx = 0;
+            }
+        }
     }
-
-    // 配置系统时钟
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                                  |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-    {
-        while(1);
-    }
-}
-
-/**
- * USART2初始化 - 直接寄存器写入 (绕过HAL,可靠)
- * PCLK1 = 32MHz (64MHz HCLK / 2)
- * USARTDIV = 32000000 / (16 × 115200) = 17.361
- * BRR = (17 << 4) | 6 = 0x116
- */
-static void MX_USART2_UART_Init(void)
-{
-    // 1. 使能时钟
-    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN;    // AFIO (复用功能)
-    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;  // USART2 on APB1
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;    // GPIOA
-
-    // 2. GPIO: PA2=AF_PP(TX), PA3=Input(RX)
-    // GPIOA_CRL: PA0[3:0]=0100, PA1[7:4]=0100, PA2[11:8]=1011, PA3[15:12]=1000
-    GPIOA->CRL = (GPIOA->CRL & 0xFFFF0000) | 0x00008B44;
-
-    // 3. 波特率 115200 @ 32MHz PCLK1
-    USART2->BRR = 0x0116;  // Mantissa=17, Fraction=6
-
-    // 4. 使能 USART (TE+RE+UE), 使能 RXNE 中断
-    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
-
-    // 5. 使能 USART2 中断
-    NVIC_SetPriority(USART2_IRQn, 0);
-    NVIC_EnableIRQ(USART2_IRQn);
-
-    // 6. 初始化 HAL 句柄状态 (供 HAL 函数使用)
-    huart2.Instance = USART2;
-    huart2.Init.BaudRate = 115200;
-    huart2.gState = HAL_UART_STATE_READY;
-    huart2.RxState = HAL_UART_STATE_READY;
-    huart2.TxState = HAL_UART_STATE_READY;
-}
-
-static void MX_GPIO_Init(void)
-{
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-}
-
-/**
- * HAL UART MSP初始化回调
- */
-void HAL_UART_MspInit(UART_HandleTypeDef* huart)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    if (huart->Instance == USART2)
-    {
-        // 使能时钟
-        __HAL_RCC_USART2_CLK_ENABLE();
-        __HAL_RCC_GPIOA_CLK_ENABLE();
-
-        // TX: PA2 - 复用推挽输出
-        GPIO_InitStruct.Pin = GPIO_PIN_2;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        // RX: PA3 - 浮空输入（应改为下拉，防止浮空噪声）
-        GPIO_InitStruct.Pin = GPIO_PIN_3;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_PULLDOWN;  // Modbus空闲时为0，配合RS485收发器
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        // 使能接收中断
-        HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
-        HAL_NVIC_EnableIRQ(USART2_IRQn);
-    }
-}
-
-/**
- * SysTick中断处理
- */
-void SysTick_Handler(void)
-{
-    HAL_IncTick();
-}
-
-/**
- * USART2中断处理
- */
-void USART2_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&huart2);
 }
