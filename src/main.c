@@ -40,6 +40,14 @@ volatile uint16_t jcy_zm_vzm;        // VZM 原始
 volatile uint16_t jcy_zm_freq_set;   // 阻抗测量频率设置 (FRQMantissa|FRQExp<<8|LFNS<<12)
 volatile uint16_t jcy_zm_done;       // 最近一次 ZM 是否完成 (BalZMDone)
 volatile uint8_t  zm_start_req;      // FC05 线圈 0x0000=ON 触发的启动请求
+// ── 参数寄存器 (主机经 FC03/06/10 读写) + 均衡 ──
+volatile uint16_t jcy_samp_res;      // 0x40C0 采样电阻 0~3 (0=20R,1=10R,2=6.67R,3=5R)
+volatile uint16_t jcy_zm_gain;       // 0x4280 ZM 增益 (1/4/16)
+volatile uint16_t jcy_bal_volt;      // 0x4100 均衡电压 0~255 (mV=1200+值*18.8)
+volatile uint16_t jcy_bal_time;      // 0x4140 均衡时间 0~255 (1LSB=134s)
+volatile uint16_t jcy_bal_pwm;       // 0x4180 PWM 占空比 0~14
+volatile uint16_t jcy_bal_mode;      // 0x0080 均衡模式 0=时间 1=电压
+volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动/停止
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -63,6 +71,8 @@ static void init_registers(void) {
     jcy_zm_re = 0; jcy_zm_im = 0; jcy_zm_vzm = 0; jcy_zm_done = 0;
     jcy_zm_freq_set = 0x0A09;   // 默认 ~68.6Hz: FRQMantissa=9, FRQExp=10 (F=7.4506m*M*2^E)
     zm_start_req = 0;
+    jcy_samp_res = 0; jcy_zm_gain = 1; jcy_bal_volt = 133; jcy_bal_time = 0;
+    jcy_bal_pwm = 0; jcy_bal_mode = 0; bal_start_req = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
@@ -95,7 +105,12 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3E2D: return jcy_zm_done;
         case 0x4000: return jcy_zm_freq;
         case 0x4040: return jcy_zm_avg;
+        case 0x40C0: return jcy_samp_res;
+        case 0x4100: return jcy_bal_volt;
+        case 0x4140: return jcy_bal_time;
+        case 0x4180: return jcy_bal_pwm;
         case 0x4200: return jcy_zm_freq_set;
+        case 0x4280: return jcy_zm_gain;
         default:     return 0x0000;
     }
 }
@@ -112,7 +127,12 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x3380: jcy_status = val; break;
         case 0x4000: jcy_zm_freq = val; break;
         case 0x4040: jcy_zm_avg = val; break;
-        case 0x4200: jcy_zm_freq_set = val; break;   // 阻抗测量频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
+        case 0x40C0: jcy_samp_res = val & 0x03; break;       // 采样电阻 0~3
+        case 0x4100: jcy_bal_volt = val & 0xFF; break;       // 均衡电压 0~255
+        case 0x4140: jcy_bal_time = val & 0xFF; break;       // 均衡时间 0~255
+        case 0x4180: jcy_bal_pwm = val & 0x0F; break;        // PWM 0~14
+        case 0x4200: jcy_zm_freq_set = val; break;           // 阻抗测量频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
+        case 0x4280: jcy_zm_gain = val; break;               // ZM 增益 1/4/16
     }
 }
 
@@ -321,6 +341,27 @@ static void dnb_stop_zm(void) {
     dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR, 0x0000, DNB_HEAD, DNB_CHAIN_LEN, 1);
 }
 
+/* ── 均衡 (Balance) ─────────────────────────────────────────────────────── */
+#define DNB_CMD_SETBALCURR  0x08   // EnBal=bit12, PWM=bits8-11, BalTimeOut=bits0-7
+#define DNB_CMD_SETBALVOLT  0x09   // BalMode=bit14, BalVolt=bits0-13 (0-16383 → 1.2-6.0V)
+
+/* 启动均衡: SetBalVolt(模式+目标电压) → SetBalCurr(EnBal=1, PWM, 超时)。发到 U8。
+ * 主机寄存器 jcy_bal_volt 0~255 (mV=1200+值*18.8) → 芯片 14位 BalVolt ≈ 值*64 (近似, 待标定)。 */
+static void dnb_start_balance(void) {
+    uint16_t chip_bv = (uint16_t)((uint32_t)jcy_bal_volt * 64);     // 0~255 → ~0..16320
+    if (chip_bv > 0x3FFF) chip_bv = 0x3FFF;
+    uint16_t bv = (uint16_t)((jcy_bal_mode ? (1u << 14) : 0) | (chip_bv & 0x3FFF));
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETBALVOLT, bv, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+    uint16_t bc = (uint16_t)((1u << 12) | ((jcy_bal_pwm & 0x0F) << 8) | (jcy_bal_time & 0xFF));
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETBALCURR, bc, DNB_HEAD, DNB_CHAIN_LEN, 1);
+}
+
+/* 停止均衡 (SetBalCurr EnBal=0)。 */
+static void dnb_stop_balance(void) {
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETBALCURR, 0x0000, DNB_HEAD, DNB_CHAIN_LEN, 1);
+}
+
 /* ── CRC16 Modbus ───────────────────────────────────────────────────────── */
 
 static uint16_t crc16(const uint8_t *data, uint16_t len) {
@@ -387,17 +428,44 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             }
             modbus_reply(tx_buf, 3 + count * 2); break;
         }
-        case 0x05: {   // 写单个线圈: 0x0000 启动阻抗测量 (FF00=启动, 0000=停止)
+        case 0x05: {   // 写单个线圈: 0x0000 启动 ZM, 0x0040 启动均衡, 0x0080 均衡模式
             uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
-            if (addr == 0x0000) {
-                if (val == 0xFF00) zm_start_req = 1;
-                else if (val == 0x0000) zm_start_req = 0;
-            }
+            uint8_t on = (val == 0xFF00);
+            if      (addr == 0x0000) zm_start_req  = on;
+            else if (addr == 0x0040) bal_start_req = on;
+            else if (addr == 0x0080) jcy_bal_mode  = on;
             modbus_reply(rx, 6); break;   // FC05 回显请求
         }
         case 0x06: {
             uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
             set_reg(addr, val); modbus_reply(rx, 6); break;
+        }
+        case 0x0F: {   // 写多个线圈
+            uint16_t addr = (rx[2] << 8) | rx[3], qty = (rx[4] << 8) | rx[5];
+            uint8_t bc = rx[6];
+            if (qty == 0 || qty > 1968 || bc != (qty + 7) / 8 || rxlen < 9 + bc) {
+                modbus_exception(0x0F, 0x03); return;
+            }
+            for (uint16_t i = 0; i < qty; i++) {
+                uint8_t bit = (rx[7 + i / 8] >> (i % 8)) & 1;
+                uint16_t a = addr + i;
+                if      (a == 0x0000) zm_start_req  = bit;
+                else if (a == 0x0040) bal_start_req = bit;
+                else if (a == 0x0080) jcy_bal_mode  = bit;
+            }
+            tx_buf[0]=0x01; tx_buf[1]=0x0F; tx_buf[2]=rx[2]; tx_buf[3]=rx[3]; tx_buf[4]=rx[4]; tx_buf[5]=rx[5];
+            modbus_reply(tx_buf, 6); break;
+        }
+        case 0x10: {   // 写多个寄存器
+            uint16_t addr = (rx[2] << 8) | rx[3], qty = (rx[4] << 8) | rx[5];
+            uint8_t bc = rx[6];
+            if (qty == 0 || qty > 123 || bc != qty * 2 || rxlen < 9 + bc) {
+                modbus_exception(0x10, 0x03); return;
+            }
+            for (uint16_t i = 0; i < qty; i++)
+                set_reg(addr + i, (rx[7 + i * 2] << 8) | rx[8 + i * 2]);
+            tx_buf[0]=0x01; tx_buf[1]=0x10; tx_buf[2]=rx[2]; tx_buf[3]=rx[3]; tx_buf[4]=rx[4]; tx_buf[5]=rx[5];
+            modbus_reply(tx_buf, 6); break;
         }
         default:
             modbus_exception(rx[1], 0x01); break;   // 不支持的功能码 → 异常 0x01
@@ -434,6 +502,7 @@ int main(void)
     uint32_t measure_ticks = 0;
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
+    uint8_t  bal_running = 0;       // 均衡进行中
 #define ZM_TIMEOUT_CYCLES  12       // ~6s 没完成则放弃, 关 EnZM 恢复 VM
 
 #define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
@@ -508,6 +577,14 @@ int main(void)
                     }
                 } else {
                     jcy_status = 0x0000;        // 空闲
+                }
+
+                // 均衡: 线圈 0x0040 启动/停止 (与 VM 共存, 芯片按 BalTimeOut 自动结束)
+                if (bal_start_req && !bal_running) {
+                    dnb_delay_cycles(8000); dnb_start_balance(); bal_running = 1;
+                    jcy_status = 0x0002;        // 均衡运行中
+                } else if (!bal_start_req && bal_running) {
+                    dnb_delay_cycles(8000); dnb_stop_balance(); bal_running = 0;
                 }
             }
         }
