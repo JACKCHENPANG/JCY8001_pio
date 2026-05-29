@@ -191,6 +191,29 @@ static void spi1_init(void) {
 static void spi1_nss_low(void)  { GPIOB->BRR  = GPIO_BRR_BR2; }
 static void spi1_nss_high(void) { GPIOB->BSRR = GPIO_BSRR_BS2; }
 
+/* ── 采样电阻量程选通 (硬件: R6=1Ω←PB5, R7=5Ω←PB3, R29=10Ω←PD2; 互斥, 高=选通) ──
+ * PB3 是 JTDO, 需 SWJ_CFG=010 关 JTAG【保留 SWD】才能当 GPIO (J-Link 仍可烧)。 */
+static void resis_gpio_init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPDEN | RCC_APB2ENR_AFIOEN;
+    // SWJ_CFG=010: 关 JTAG-DP, 保留 SW-DP。务必是 0x2 (绝不能 0x4=同时关 SWD 会变砖)
+    AFIO->MAPR = (AFIO->MAPR & ~(0x7u << 24)) | (0x2u << 24);
+    // PB3(CRL 12-15), PB5(CRL 20-23) 输出推挽 2MHz=0x2
+    GPIOB->CRL = (GPIOB->CRL & ~((0xFu << 12) | (0xFu << 20))) | (0x2u << 12) | (0x2u << 20);
+    // PD2(CRL 8-11) 输出推挽
+    GPIOD->CRL = (GPIOD->CRL & ~(0xFu << 8)) | (0x2u << 8);
+    GPIOB->BRR = (1u << 3) | (1u << 5);   // 默认全关
+    GPIOD->BRR = (1u << 2);
+}
+
+/* 选采样电阻档: 0=10Ω(R29/PD2), 1=5Ω(R7/PB3), 2=1Ω(R6/PB5)。互斥。 */
+static void resis_select(uint8_t sel) {
+    GPIOB->BRR = (1u << 3) | (1u << 5);   // 先全关 PB3/PB5
+    GPIOD->BRR = (1u << 2);                // 关 PD2
+    if (sel == 0)      GPIOD->BSRR = (1u << 2);   // 10Ω R29 PD2
+    else if (sel == 1) GPIOB->BSRR = (1u << 3);   //  5Ω R7  PB3
+    else               GPIOB->BSRR = (1u << 5);   //  1Ω R6  PB5
+}
+
 static uint8_t spi1_transfer(uint8_t tx) {
     uint32_t timeout = 10000;
     while (!(SPI1->SR & SPI_SR_TXE) && --timeout);
@@ -363,6 +386,8 @@ static void dnb_start_zm(void) {
         freq  |= (1u << 12);           // LFNS on
         hipass = 0x2;                  // gain16
     }
+    resis_select((uint8_t)jcy_samp_res);   // 选通采样电阻 (把对应档接进 ZM 电流回路)
+    dnb_delay_cycles(8000);
     dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMFREQ, freq, DNB_HEAD, DNB_CHAIN_LEN, 1);
     dnb_delay_cycles(8000);
     // EnZM=1(bit11), enXCS=1(bit10 外部电流源, JCY8001 用外部MOSFET, ZM必须外部源),
@@ -371,9 +396,11 @@ static void dnb_start_zm(void) {
              (1u << 11) | (1u << 10) | ((uint16_t)hipass << 8) | 0x10, DNB_HEAD, DNB_CHAIN_LEN, 1);
 }
 
-/* 关闭阻抗测量 (SetZMCurr EnZM=0) → 恢复正常电压测量 (VM)。 */
+/* 关闭阻抗测量 (SetZMCurr EnZM=0) → 恢复正常电压测量 (VM)。同时关断采样电阻选通脚(安全)。 */
 static void dnb_stop_zm(void) {
     dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR, 0x0000, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    GPIOB->BRR = (1u << 3) | (1u << 5);   // 关 PB3/PB5
+    GPIOD->BRR = (1u << 2);                // 关 PD2 (不长时间驱动充/放电脚)
 }
 
 /* ── 均衡 (Balance) ─────────────────────────────────────────────────────── */
@@ -519,6 +546,7 @@ int main(void)
     init_registers();
     usart2_init();
     spi1_init();
+    resis_gpio_init();   // 采样电阻量程选通 GPIO (PB5/PB3/PD2)
 
     // 枚举菊花链 (U6 网关=ID1, U8 测量=ID2), 并 Init 两颗 IC (链长=2)。
     // U8 由硬件 SPI_En=低固定在测量模式, 唤醒后自动进入正常模式持续测量 VM/TM。
