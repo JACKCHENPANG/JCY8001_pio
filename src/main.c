@@ -48,6 +48,7 @@ volatile uint16_t jcy_bal_time;      // 0x4140 均衡时间 0~255 (1LSB=134s)
 volatile uint16_t jcy_bal_pwm;       // 0x4180 PWM 占空比 0~14
 volatile uint16_t jcy_bal_mode;      // 0x0080 均衡模式 0=时间 1=电压
 volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动/停止
+volatile uint16_t jcy_zm_mode;       // 0x4300 ZM 测量模式: 0=普通, 1=低阻低频(强制 LFNS+增益16)
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -73,6 +74,7 @@ static void init_registers(void) {
     zm_start_req = 0;
     jcy_samp_res = 0; jcy_zm_gain = 1; jcy_bal_volt = 133; jcy_bal_time = 0;
     jcy_bal_pwm = 0; jcy_bal_mode = 0; bal_start_req = 0;
+    jcy_zm_mode = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
@@ -111,6 +113,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4180: return jcy_bal_pwm;
         case 0x4200: return jcy_zm_freq_set;
         case 0x4280: return jcy_zm_gain;
+        case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
         default:     return 0x0000;
     }
 }
@@ -141,6 +144,8 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4F06: jcy_bal_pwm  = val & 0x0F; break;       // 群发 PWM
         case 0x4F07: jcy_zm_freq_set = val; break;           // 群发 测量频率 (低字)
         case 0x4F09: jcy_zm_gain  = val; break;              // 群发 ZM 增益
+        case 0x4300: jcy_zm_mode  = val; break;              // ZM 测量模式 0=普通 1=低阻低频
+        case 0x4F0A: jcy_zm_mode  = val; break;              // 群发 ZM 测量模式
     }
 }
 
@@ -336,12 +341,21 @@ static uint32_t dnb_get_status(uint8_t id, uint8_t status_type) {
 #define DNB_DATA_ZIMAG     0x08   // GetData: 阻抗虚部
 #define DNB_SRVREQ_BALZMDONE  (1u << 7)   // SrvReq bit7: 均衡/阻抗测量完成
 
-/* 启动一次阻抗测量: SetZMFreq(配置频率) → SetZMCurr(EnZM=1)。发到测量芯片 U8。 */
+/* 启动一次阻抗测量: SetZMFreq → SetZMCurr(EnZM=1)。发到测量芯片 U8。
+ * HiPass(增益): jcy_zm_gain 1→00, 4→01, 16→10。
+ * 低阻低频模式(jcy_zm_mode=1): 强制 LFNS=1(压低频噪声) + 增益16, 覆盖单独设置。 */
 static void dnb_start_zm(void) {
-    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMFREQ, jcy_zm_freq_set, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    uint16_t freq   = jcy_zm_freq_set;
+    uint8_t  hipass = (jcy_zm_gain >= 16) ? 0x2 : (jcy_zm_gain >= 4 ? 0x1 : 0x0);
+    if (jcy_zm_mode == 1) {            // 低阻低频模式
+        freq  |= (1u << 12);           // LFNS on
+        hipass = 0x2;                  // gain16
+    }
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMFREQ, freq, DNB_HEAD, DNB_CHAIN_LEN, 1);
     dnb_delay_cycles(8000);
-    // EnZM=1(bit11), enXCS=0, HiPass=0(gain1), ZMTimeOut=0x10
-    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR, (1u << 11) | 0x10, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    // EnZM=1(bit11), HiPass(bit8-9), ZMTimeOut=0x10
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR,
+             (1u << 11) | ((uint16_t)hipass << 8) | 0x10, DNB_HEAD, DNB_CHAIN_LEN, 1);
 }
 
 /* 关闭阻抗测量 (SetZMCurr EnZM=0) → 恢复正常电压测量 (VM)。 */
