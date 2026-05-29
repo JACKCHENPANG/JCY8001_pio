@@ -395,7 +395,7 @@ static void dnb_start_zm(void) {
     // EnZM=1(bit11), enXCS=1(bit10 外部电流源, JCY8001 用外部MOSFET, ZM必须外部源),
     // HiPass(bit8-9), ZMTimeOut=0x10
     dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR,
-             (1u << 11) | (1u << 10) | ((uint16_t)hipass << 8) | 0x10, DNB_HEAD, DNB_CHAIN_LEN, 1);
+             (1u << 11) | (1u << 10) | ((uint16_t)hipass << 8) | 0x01, DNB_HEAD, DNB_CHAIN_LEN, 1);  // ZMTimeOut=1 (匹配原厂)
 }
 
 /* 关闭阻抗测量 (SetZMCurr EnZM=0) → 恢复正常电压测量 (VM)。同时关断采样电阻选通脚(安全)。 */
