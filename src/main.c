@@ -197,11 +197,13 @@ static void resis_gpio_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPDEN | RCC_APB2ENR_AFIOEN;
     // SWJ_CFG=010: 关 JTAG-DP, 保留 SW-DP。务必是 0x2 (绝不能 0x4=同时关 SWD 会变砖)
     AFIO->MAPR = (AFIO->MAPR & ~(0x7u << 24)) | (0x2u << 24);
-    // PB3(CRL 12-15), PB5(CRL 20-23) 输出推挽 2MHz=0x2
-    GPIOB->CRL = (GPIOB->CRL & ~((0xFu << 12) | (0xFu << 20))) | (0x2u << 12) | (0x2u << 20);
+    // PB3(12-15), PB5(20-23), PB6(24-27), PB7(28-31) 输出推挽 2MHz=0x2
+    GPIOB->CRL = (GPIOB->CRL & ~((0xFu<<12)|(0xFu<<20)|(0xFu<<24)|(0xFu<<28)))
+               | (0x2u<<12)|(0x2u<<20)|(0x2u<<24)|(0x2u<<28);
     // PD2(CRL 8-11) 输出推挽
     GPIOD->CRL = (GPIOD->CRL & ~(0xFu << 8)) | (0x2u << 8);
-    GPIOB->BRR = (1u << 3) | (1u << 5);   // 默认全关
+    GPIOB->BRR = (1u << 3);                          // PB3 默认关
+    GPIOB->BSRR = (1u << 5) | (1u << 6) | (1u << 7); // PB5/PB6/PB7 常高 (匹配原厂 idle 0x..F0)
     GPIOD->BRR = (1u << 2);
 }
 
