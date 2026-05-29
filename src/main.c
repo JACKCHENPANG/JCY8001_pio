@@ -133,6 +133,14 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4180: jcy_bal_pwm = val & 0x0F; break;        // PWM 0~14
         case 0x4200: jcy_zm_freq_set = val; break;           // 阻抗测量频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
         case 0x4280: jcy_zm_gain = val; break;               // ZM 增益 1/4/16
+        // ── 群发地址 (写全部通道; 本单通道板=写本通道) ──
+        case 0x4F01: jcy_zm_avg   = val; break;              // 群发 ZM 平均次数
+        case 0x4F03: jcy_samp_res = val & 0x03; break;       // 群发 采样电阻
+        case 0x4F04: jcy_bal_volt = val & 0xFF; break;       // 群发 均衡电压
+        case 0x4F05: jcy_bal_time = val & 0xFF; break;       // 群发 均衡时间
+        case 0x4F06: jcy_bal_pwm  = val & 0x0F; break;       // 群发 PWM
+        case 0x4F07: jcy_zm_freq_set = val; break;           // 群发 测量频率 (低字)
+        case 0x4F09: jcy_zm_gain  = val; break;              // 群发 ZM 增益
     }
 }
 
@@ -428,12 +436,12 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             }
             modbus_reply(tx_buf, 3 + count * 2); break;
         }
-        case 0x05: {   // 写单个线圈: 0x0000 启动 ZM, 0x0040 启动均衡, 0x0080 均衡模式
+        case 0x05: {   // 写单个线圈: 0x0000/0x0F00 启ZM, 0x0040/0x0F01 启均衡, 0x0080/0x0F02 模式
             uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
             uint8_t on = (val == 0xFF00);
-            if      (addr == 0x0000) zm_start_req  = on;
-            else if (addr == 0x0040) bal_start_req = on;
-            else if (addr == 0x0080) jcy_bal_mode  = on;
+            if      (addr == 0x0000 || addr == 0x0F00) zm_start_req  = on;
+            else if (addr == 0x0040 || addr == 0x0F01) bal_start_req = on;
+            else if (addr == 0x0080 || addr == 0x0F02) jcy_bal_mode  = on;
             modbus_reply(rx, 6); break;   // FC05 回显请求
         }
         case 0x06: {
@@ -449,9 +457,9 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             for (uint16_t i = 0; i < qty; i++) {
                 uint8_t bit = (rx[7 + i / 8] >> (i % 8)) & 1;
                 uint16_t a = addr + i;
-                if      (a == 0x0000) zm_start_req  = bit;
-                else if (a == 0x0040) bal_start_req = bit;
-                else if (a == 0x0080) jcy_bal_mode  = bit;
+                if      (a == 0x0000 || a == 0x0F00) zm_start_req  = bit;
+                else if (a == 0x0040 || a == 0x0F01) bal_start_req = bit;
+                else if (a == 0x0080 || a == 0x0F02) jcy_bal_mode  = bit;
             }
             tx_buf[0]=0x01; tx_buf[1]=0x0F; tx_buf[2]=rx[2]; tx_buf[3]=rx[3]; tx_buf[4]=rx[4]; tx_buf[5]=rx[5];
             modbus_reply(tx_buf, 6); break;
