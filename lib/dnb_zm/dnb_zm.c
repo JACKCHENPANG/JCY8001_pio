@@ -181,7 +181,9 @@ static const unsigned char ExpMapArr[] = {
 6	,	5	,	4	,	3	,	2	,	1	,	0
 };
 #define ZM_N ((int)(sizeof(CoeffMapArr)/sizeof(CoeffMapArr[0])))
-static const float ResisList[4] = {10.0f, 5.0f, 3.33333f, 2.5f};
+/* 采样电阻档 (须与硬件一致): 档0=10Ω, 档1=5Ω, 档2=1Ω */
+static const float ResisList[3] = {10.0f, 5.0f, 1.0f};
+#define RESIS_N 3
 #define LINX_VOLT_LSB (4800.0/16383.0)
 
 static long zm_real(unsigned short data, double Rext, double VZM, int idx){
@@ -197,7 +199,8 @@ int dnb_zm_index(unsigned char mant, unsigned char exp){
 void dnb_zm_convert(unsigned short re_raw, unsigned short im_raw, unsigned short vzm_raw,
                     unsigned char samp_sel, int idx, long long *zr, long long *zi){
     double vzm = (double)(vzm_raw & 0x3FFF) * LINX_VOLT_LSB + 1200.0;
-    double R = ResisList[samp_sel & 3];
+    if (samp_sel >= RESIS_N) samp_sel = RESIS_N - 1;   // 钳位到有效档 (0~2)
+    double R = ResisList[samp_sel];
     *zr =  (long long)zm_real(re_raw, R, vzm, idx);
     *zi = -(long long)zm_real(im_raw, R, vzm, idx);
 }
