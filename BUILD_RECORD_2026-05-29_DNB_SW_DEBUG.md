@@ -156,7 +156,28 @@ dev 之前一直读 **ID=1=U6 网关** → 温度有(TM 在 SPI 模式可用)、
 - **实测(暖启动)**：`enum_found=2`(两颗 IC 都确认到)，温度 34.7℃ / 电压 6.0000V 稳定。
 - ⚠️ **冷启动(真正断电再上电)枚举路径无法远程验证**(无法远程给 DNB 断电)。逻辑照原厂 Enum 握手实现，需在工装上断电重上电验证一次。
 
-**最终状态：板上为清理后的 dev 固件，温度+电压均正确，代码已精简。** main.c 关键: `DNB_CHAIN_LEN=2`, `DNB_MEAS_ID=2`, 无间隙流水线 SPI, 不 toggle PB2, 命令间 ~4ms。
+**清理后状态：板上 dev 固件温度+电压均正确，代码已精简。** main.c 关键: `DNB_CHAIN_LEN=2`, `DNB_MEAS_ID=2`, 无间隙流水线 SPI, 不 toggle PB2, 命令间 ~4ms。
+
+## 追加六：通讯指令审查修复 + 阻抗测量(ZM/EIS)移植
+
+### Modbus 通讯审查 + 修复
+- 🔴 FC01/02/03/04 `count` 无上限 → `tx_buf[256]` 溢出。已加校验: FC03/04 count>125、FC01/02 count>2000 → 回异常 0x03。
+- 🟡 不支持的功能码原来无响应 → 已加 `default` 回异常 0x01 (实测 FC05 在未启用 ZM 路由前回 `01 85 01`)。
+- 🟡 FC01 线圈位恒置 bit0 (只对 coil0 正确, 已知局限, 未改)。
+
+### 阻抗测量移植
+- FC05 写线圈 0x0000=FF00 → 启动 ZM; 0000 → 停。
+- `dnb_start_zm()`: SetZMFreq(0x07, 频率=jcy_zm_freq_set) + SetZMCurr(0x06, EnZM=bit11) 发到 U8(ID=2)。
+- 测量循环轮询 SrvReq 的 BalZMDone(bit7); 完成则读 Zreal(0x07)/Zimag(0x08)/VZM(0x06), 取 `ulData>>4 & 0xFFFF`(ZMantissa|ZExp<<12 原始值, 主机侧换算 Ω, 原厂 cal_ZMR 也是注释掉留给主机)。
+- **超时保护**: 12 周期(~6s)未完成 → `dnb_stop_zm()`(SetZMCurr EnZM=0) 关 ZM 恢复 VM, status=0x0005。修掉了"ZM 卡住把电压压成 0 直到复位"的坑。
+- Modbus 寄存器: RE 0x3000 / IM 0x3080 / VZM 0x3200 (各取低 16 位原始) / ZM完成标志 0x3E2D / 频率设置 0x4200 (FRQMantissa|FRQExp<<8|LFNS<<12, 默认 0x0A09≈68.6Hz)。
+
+### 实测(6V 台式电源, 非真实电芯)
+- FC05 启动 → status=0x1, 芯片进 ZM, SrvReq=0x0044 = VM-ADCErr(bit2)+CurrErr(bit6) → **无真实电芯无法测阻抗, BalZMDone 不置位**(符合预期)。
+- ~6s 超时 → 自动关 ZM, **volt 恢复 6.0000V**, 不再卡死。
+- ⚠️ **阻抗 RE/IM 数值无法用台式电源验证, 需接真实电芯 + 参考仪器在工装上确认。** 命令路径/超时/恢复均已验证 OK。
+
+main.c Flash 2908B, 编译零警告。温度+电压仍正常。
 
 ## ⚠️ 原厂固件烧录关键：app 有效标志
 

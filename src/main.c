@@ -33,6 +33,13 @@ volatile uint16_t jcy_dnb_gs_lo;     // GeneralStatus low word
 volatile uint16_t jcy_dnb_ss_hi;     // SrvReqStatus high word
 volatile uint16_t jcy_dnb_ss_lo;     // SrvReqStatus low word
 volatile uint16_t jcy_dnb_phase_dbg; // measurement phase / state
+// ── 阻抗测量 (ZM/EIS) ──
+volatile uint16_t jcy_zm_re;         // Zreal 原始 (ZMantissa|ZExponent<<12), 主机侧换算 Ω
+volatile uint16_t jcy_zm_im;         // Zimag 原始
+volatile uint16_t jcy_zm_vzm;        // VZM 原始
+volatile uint16_t jcy_zm_freq_set;   // 阻抗测量频率设置 (FRQMantissa|FRQExp<<8|LFNS<<12)
+volatile uint16_t jcy_zm_done;       // 最近一次 ZM 是否完成 (BalZMDone)
+volatile uint8_t  zm_start_req;      // FC05 线圈 0x0000=ON 触发的启动请求
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -53,6 +60,9 @@ static void init_registers(void) {
     jcy_dnb_volt_raw = 0;
     jcy_dnb_temp_raw = 0;
     jcy_dnb_zmv_raw  = 0;
+    jcy_zm_re = 0; jcy_zm_im = 0; jcy_zm_vzm = 0; jcy_zm_done = 0;
+    jcy_zm_freq_set = 0x0A09;   // 默认 ~68.6Hz: FRQMantissa=9, FRQExp=10 (F=7.4506m*M*2^E)
+    zm_start_req = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
@@ -78,8 +88,14 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3300: return jcy_temp;
         case 0x3340: return jcy_voltage;
         case 0x3380: return jcy_status;
+        // 阻抗: RE 0x3000(64位,仅低16位有效=原始 M/E), IM 0x3080, VZM 0x3200。其余字=0。
+        case 0x3000: return jcy_zm_re;
+        case 0x3080: return jcy_zm_im;
+        case 0x3200: return jcy_zm_vzm;
+        case 0x3E2D: return jcy_zm_done;
         case 0x4000: return jcy_zm_freq;
         case 0x4040: return jcy_zm_avg;
+        case 0x4200: return jcy_zm_freq_set;
         default:     return 0x0000;
     }
 }
@@ -96,6 +112,7 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x3380: jcy_status = val; break;
         case 0x4000: jcy_zm_freq = val; break;
         case 0x4040: jcy_zm_avg = val; break;
+        case 0x4200: jcy_zm_freq_set = val; break;   // 阻抗测量频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
     }
 }
 
@@ -284,6 +301,26 @@ static uint32_t dnb_get_status(uint8_t id, uint8_t status_type) {
     return dnb_xfer(id, DNB_CMD_GETSTATUS, status_type, DNB_HEAD, DNB_CHAIN_LEN, 1);
 }
 
+/* ── 阻抗测量 (ZM) ──────────────────────────────────────────────────────── */
+#define DNB_CMD_SETZMCURR  0x06   // 设置 ZM 电流/使能 (EnZM=bit11)
+#define DNB_CMD_SETZMFREQ  0x07   // 设置 ZM 频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
+#define DNB_DATA_ZREAL     0x07   // GetData: 阻抗实部 (ZMantissa b4-15, ZExp b16-19)
+#define DNB_DATA_ZIMAG     0x08   // GetData: 阻抗虚部
+#define DNB_SRVREQ_BALZMDONE  (1u << 7)   // SrvReq bit7: 均衡/阻抗测量完成
+
+/* 启动一次阻抗测量: SetZMFreq(配置频率) → SetZMCurr(EnZM=1)。发到测量芯片 U8。 */
+static void dnb_start_zm(void) {
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMFREQ, jcy_zm_freq_set, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+    // EnZM=1(bit11), enXCS=0, HiPass=0(gain1), ZMTimeOut=0x10
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR, (1u << 11) | 0x10, DNB_HEAD, DNB_CHAIN_LEN, 1);
+}
+
+/* 关闭阻抗测量 (SetZMCurr EnZM=0) → 恢复正常电压测量 (VM)。 */
+static void dnb_stop_zm(void) {
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMCURR, 0x0000, DNB_HEAD, DNB_CHAIN_LEN, 1);
+}
+
 /* ── CRC16 Modbus ───────────────────────────────────────────────────────── */
 
 static uint16_t crc16(const uint8_t *data, uint16_t len) {
@@ -306,6 +343,11 @@ static void modbus_reply(const uint8_t *data, uint16_t len) {
     usart2_send(crc & 0xFF); usart2_send(crc >> 8);
 }
 
+static void modbus_exception(uint8_t fc, uint8_t code) {
+    uint8_t e[3] = { 0x01, (uint8_t)(fc | 0x80), code };
+    modbus_reply(e, 3);
+}
+
 static void process_modbus(uint8_t *rx, uint16_t rxlen) {
     if (rxlen < 8 || rx[0] != 0x01) return;
     uint16_t crc = crc16(rx, rxlen - 2);
@@ -314,6 +356,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
     switch (rx[1]) {
         case 0x01: {
             uint16_t addr = (rx[2] << 8) | rx[3], count = (rx[4] << 8) | rx[5];
+            if (count == 0 || count > 2000) { modbus_exception(rx[1], 0x03); return; }
             tx_buf[0] = 0x01; tx_buf[1] = 0x01; tx_buf[2] = (count + 7) / 8;
             uint8_t *p = &tx_buf[3]; *p = 0;
             for (uint16_t i = 0; i < count; i++) {
@@ -324,6 +367,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
         }
         case 0x02: {
             uint16_t addr = (rx[2] << 8) | rx[3], count = (rx[4] << 8) | rx[5];
+            if (count == 0 || count > 2000) { modbus_exception(rx[1], 0x03); return; }
             tx_buf[0] = 0x01; tx_buf[1] = 0x02; tx_buf[2] = (count + 7) / 8;
             uint8_t *p = &tx_buf[3]; *p = 0;
             for (uint16_t i = 0; i < count; i++) {
@@ -334,6 +378,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
         }
         case 0x03: case 0x04: {
             uint16_t addr = (rx[2] << 8) | rx[3], count = (rx[4] << 8) | rx[5];
+            if (count == 0 || count > 125) { modbus_exception(rx[1], 0x03); return; }
             tx_buf[0] = 0x01; tx_buf[1] = rx[1]; tx_buf[2] = count * 2;
             uint8_t *p = &tx_buf[3];
             for (uint16_t i = 0; i < count; i++) {
@@ -342,10 +387,20 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             }
             modbus_reply(tx_buf, 3 + count * 2); break;
         }
+        case 0x05: {   // 写单个线圈: 0x0000 启动阻抗测量 (FF00=启动, 0000=停止)
+            uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
+            if (addr == 0x0000) {
+                if (val == 0xFF00) zm_start_req = 1;
+                else if (val == 0x0000) zm_start_req = 0;
+            }
+            modbus_reply(rx, 6); break;   // FC05 回显请求
+        }
         case 0x06: {
             uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
             set_reg(addr, val); modbus_reply(rx, 6); break;
         }
+        default:
+            modbus_exception(rx[1], 0x01); break;   // 不支持的功能码 → 异常 0x01
     }
 }
 
@@ -377,6 +432,9 @@ int main(void)
     uint16_t frame_idx = 0;
     uint32_t idle_ticks = 0;
     uint32_t measure_ticks = 0;
+    uint8_t  zm_running = 0;        // 阻抗测量进行中
+    uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
+#define ZM_TIMEOUT_CYCLES  12       // ~6s 没完成则放弃, 关 EnZM 恢复 VM
 
 #define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
 
@@ -415,7 +473,42 @@ int main(void)
                 uint16_t f = (uint16_t)((uv >> 4) & 0x3FFF);
                 jcy_dnb_volt_raw = f;
                 jcy_voltage = (uint16_t)(((uint32_t)f * 48000UL) / 16383UL + 12000UL);
-                jcy_status = 0x0000;
+
+                // 阻抗测量 (ZM): FC05 线圈触发 → 启动 → 轮询 BalZMDone → 读 Zreal/Zimag/VZM
+                if (zm_start_req) {
+                    zm_start_req = 0;
+                    jcy_zm_done = 0;
+                    jcy_status = 0x0001;        // ZM 测量中
+                    dnb_delay_cycles(8000);
+                    dnb_start_zm();
+                    zm_running = 1;
+                    zm_cycles  = 0;
+                } else if (zm_running) {
+                    dnb_delay_cycles(8000);
+                    uint32_t ss = dnb_get_status(DNB_MEAS_ID, DNB_STATUS_SRVREQ);
+                    jcy_dnb_ss_hi = (uint16_t)(ss >> 16); jcy_dnb_ss_lo = (uint16_t)ss;
+                    uint16_t flags = (uint16_t)((ss >> 4) & 0xFFFF);
+                    if (flags & DNB_SRVREQ_BALZMDONE) {        // 测量完成 → 读结果
+                        dnb_delay_cycles(8000);
+                        jcy_zm_re  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZREAL) >> 4) & 0xFFFF);
+                        dnb_delay_cycles(8000);
+                        jcy_zm_im  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZIMAG) >> 4) & 0xFFFF);
+                        dnb_delay_cycles(8000);
+                        jcy_zm_vzm = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_VZM)   >> 4) & 0xFFFF);
+                        jcy_zm_done = 1;
+                        jcy_status  = 0x0006;   // 测量完成
+                        dnb_delay_cycles(8000);
+                        dnb_stop_zm();          // 关 EnZM, 恢复 VM
+                        zm_running = 0;
+                    } else if (++zm_cycles >= ZM_TIMEOUT_CYCLES) {   // 超时放弃
+                        dnb_delay_cycles(8000);
+                        dnb_stop_zm();          // 关 EnZM, 恢复 VM (否则 VM 一直被压住读 0)
+                        zm_running = 0;
+                        jcy_status = 0x0005;    // 硬件/ADC 错误 (无有效电芯无法测阻抗)
+                    }
+                } else {
+                    jcy_status = 0x0000;        // 空闲
+                }
             }
         }
     }
