@@ -7,6 +7,7 @@
  */
 #include <stdint.h>
 #include "stm32f1xx.h"
+#include "dnb_zm.h"   // 阻抗换算 + 校准表 (lib/dnb_zm)
 
 /* ── JCY8001 Registers ──────────────────────────────────────────────────── */
 
@@ -34,9 +35,11 @@ volatile uint16_t jcy_dnb_ss_hi;     // SrvReqStatus high word
 volatile uint16_t jcy_dnb_ss_lo;     // SrvReqStatus low word
 volatile uint16_t jcy_dnb_phase_dbg; // measurement phase / state
 // ── 阻抗测量 (ZM/EIS) ──
-volatile uint16_t jcy_zm_re;         // Zreal 原始 (ZMantissa|ZExponent<<12), 主机侧换算 Ω
-volatile uint16_t jcy_zm_im;         // Zimag 原始
+volatile uint16_t jcy_zm_re;         // Zreal 原始 (ZMantissa|ZExponent<<12), 调试
+volatile uint16_t jcy_zm_im;         // Zimag 原始, 调试
 volatile uint16_t jcy_zm_vzm;        // VZM 原始
+volatile int64_t  jcy_zm_re64;       // 换算后实部 (×100000, 主机 /100000=μΩ), 0x3000 64位
+volatile int64_t  jcy_zm_im64;       // 换算后虚部, 0x3080 64位
 volatile uint16_t jcy_zm_freq_set;   // 阻抗测量频率设置 (FRQMantissa|FRQExp<<8|LFNS<<12)
 volatile uint16_t jcy_zm_done;       // 最近一次 ZM 是否完成 (BalZMDone)
 volatile uint8_t  zm_start_req;      // FC05 线圈 0x0000=ON 触发的启动请求
@@ -70,7 +73,8 @@ static void init_registers(void) {
     jcy_dnb_temp_raw = 0;
     jcy_dnb_zmv_raw  = 0;
     jcy_zm_re = 0; jcy_zm_im = 0; jcy_zm_vzm = 0; jcy_zm_done = 0;
-    jcy_zm_freq_set = 0x0A09;   // 默认 ~68.6Hz: FRQMantissa=9, FRQExp=10 (F=7.4506m*M*2^E)
+    jcy_zm_re64 = 0; jcy_zm_im64 = 0;
+    jcy_zm_freq_set = 0x0746;   // 默认 66.757Hz: FRQMantissa=70, FRQExp=7 (校准表真实项, idx=413)
     zm_start_req = 0;
     jcy_samp_res = 0; jcy_zm_gain = 1; jcy_bal_volt = 133; jcy_bal_time = 0;
     jcy_bal_pwm = 0; jcy_bal_mode = 0; bal_start_req = 0;
@@ -100,11 +104,19 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3300: return jcy_temp;
         case 0x3340: return jcy_voltage;
         case 0x3380: return jcy_status;
-        // 阻抗: RE 0x3000(64位,仅低16位有效=原始 M/E), IM 0x3080, VZM 0x3200。其余字=0。
-        case 0x3000: return jcy_zm_re;
-        case 0x3080: return jcy_zm_im;
+        // 阻抗实部 RE 0x3000~0x3003 / 虚部 IM 0x3080~0x3083: 64位有符号大端, 主机 /100000=μΩ。
+        case 0x3000: return (uint16_t)(jcy_zm_re64 >> 48);
+        case 0x3001: return (uint16_t)(jcy_zm_re64 >> 32);
+        case 0x3002: return (uint16_t)(jcy_zm_re64 >> 16);
+        case 0x3003: return (uint16_t)(jcy_zm_re64);
+        case 0x3080: return (uint16_t)(jcy_zm_im64 >> 48);
+        case 0x3081: return (uint16_t)(jcy_zm_im64 >> 32);
+        case 0x3082: return (uint16_t)(jcy_zm_im64 >> 16);
+        case 0x3083: return (uint16_t)(jcy_zm_im64);
         case 0x3200: return jcy_zm_vzm;
         case 0x3E2D: return jcy_zm_done;
+        case 0x3E2E: return jcy_zm_re;   // 调试: 原始 M/E
+        case 0x3E2F: return jcy_zm_im;
         case 0x4000: return jcy_zm_freq;
         case 0x4040: return jcy_zm_avg;
         case 0x40C0: return jcy_samp_res;
@@ -586,6 +598,16 @@ int main(void)
                         jcy_zm_im  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZIMAG) >> 4) & 0xFFFF);
                         dnb_delay_cycles(8000);
                         jcy_zm_vzm = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_VZM)   >> 4) & 0xFFFF);
+                        // 换算成 μΩ (64位×100000), 频率索引由 0x4200 的 M/E 反查
+                        {
+                            int idx = dnb_zm_index((uint8_t)(jcy_zm_freq_set & 0xFF),
+                                                   (uint8_t)((jcy_zm_freq_set >> 8) & 0x0F));
+                            long long zr = 0, zi = 0;
+                            dnb_zm_convert(jcy_zm_re, jcy_zm_im, jcy_zm_vzm,
+                                           (uint8_t)jcy_samp_res, idx, &zr, &zi);
+                            jcy_zm_re64 = zr;
+                            jcy_zm_im64 = zi;
+                        }
                         jcy_zm_done = 1;
                         jcy_status  = 0x0006;   // 测量完成
                         dnb_delay_cycles(8000);
