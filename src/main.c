@@ -52,6 +52,7 @@ volatile uint16_t jcy_bal_pwm;       // 0x4180 PWM 占空比 0~14
 volatile uint16_t jcy_bal_mode;      // 0x0080 均衡模式 0=时间 1=电压
 volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动/停止
 volatile uint16_t jcy_zm_mode;       // 0x4300 ZM 测量模式: 0=普通, 1=低阻低频(强制 LFNS+增益16)
+volatile uint16_t jcy_zm_fast;       // 0x4340 ZM 速度: 0=标准(转换门余量足,稳), 1=快速(余量紧,~省一半时间)
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -79,6 +80,7 @@ static void init_registers(void) {
     jcy_samp_res = 0; jcy_zm_gain = 1; jcy_bal_volt = 133; jcy_bal_time = 0;
     jcy_bal_pwm = 0; jcy_bal_mode = 0; bal_start_req = 0;
     jcy_zm_mode = 0;
+    jcy_zm_fast = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
@@ -126,6 +128,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4200: return jcy_zm_freq_set;
         case 0x4280: return jcy_zm_gain;
         case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
+        case 0x4340: return jcy_zm_fast;          // ZM 速度 0=标准 1=快速
         default:     return 0x0000;
     }
 }
@@ -157,6 +160,7 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4F07: jcy_zm_freq_set = val; break;           // 群发 测量频率 (低字)
         case 0x4F09: jcy_zm_gain  = val; break;              // 群发 ZM 增益
         case 0x4300: jcy_zm_mode  = val; break;              // ZM 测量模式 0=普通 1=低阻低频
+        case 0x4340: jcy_zm_fast  = val; break;              // ZM 速度 0=标准 1=快速
         case 0x4F0A: jcy_zm_mode  = val; break;              // 群发 ZM 测量模式
     }
 }
@@ -592,6 +596,7 @@ int main(void)
     uint32_t measure_ticks = 0;
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
+    uint16_t zm_conv_target = 100;  // 本次 ZM 的转换时间门 (按频率 exp 自适应, ZM 启动时算)
     uint8_t  bal_running = 0;       // 均衡进行中
 #define ZM_CONV_CYCLES  100       // ZM 转换时间门: 等够这么多轮询周期就读结果(原厂按 ConvTime, 不死等 BalZMDone). 100周期~6-8s, 安全超过原厂~4-5s转换时间
 
@@ -646,6 +651,17 @@ int main(void)
                     dnb_start_zm();
                     zm_running = 1;
                     zm_cycles  = 0;
+                    // 转换门按频率 exp 自适应: ConvTime=max(1100, 1050*2^(7-exp)) ms (原厂公式)。
+                    // 低频(exp小)转换久(到~67s), 必须等够否则读到未完成的值。~40ms/cycle 保守(实测~55, 偏长安全)。
+                    {
+                        uint8_t ze = (uint8_t)((jcy_zm_freq_set >> 8) & 0x0F);
+                        // conv_target 跟踪实际 ConvTime(轮询周期实测~225ms). 标准:~2x余量; 快速:~1.3x余量(省一半时间).
+                        uint32_t conv_ms = (ze >= 7) ? 1100u : (1050u << (7 - ze));
+                        uint32_t div  = jcy_zm_fast ? 180u : 110u;
+                        uint32_t base = jcy_zm_fast ? 3u : 6u;
+                        uint32_t tc = conv_ms / div + base;
+                        zm_conv_target = (tc > 9000u) ? 9000u : (uint16_t)tc;
+                    }
                 } else if (zm_running) {
                     dnb_delay_cycles(8000);
                     uint32_t ss = dnb_get_status(DNB_MEAS_ID, DNB_STATUS_SRVREQ);
@@ -653,7 +669,7 @@ int main(void)
                     uint16_t flags = (uint16_t)((ss >> 4) & 0xFFFF);
                     // 原厂 MeasThread.c 逻辑: 不死等 BalZMDone(本配置下该位不置位), 而是等转换时间(ZM_CONV_CYCLES)
                     // 到了就读 Zreal/Zimag/VZM; BalZMDone 若提前置位也立即读。只要无 ZM/VM ADC 错误即认有效。
-                    if ((flags & DNB_SRVREQ_BALZMDONE) || (++zm_cycles >= ZM_CONV_CYCLES)) {
+                    if ((flags & DNB_SRVREQ_BALZMDONE) || (++zm_cycles >= zm_conv_target)) {
                         if (flags & (DNB_SRVREQ_ZMADCERR | DNB_SRVREQ_VMADCERR)) {   // ADC 错误 → 无有效阻抗
                             dnb_delay_cycles(8000);
                             dnb_stop_zm();
