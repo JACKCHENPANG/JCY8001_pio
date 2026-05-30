@@ -186,11 +186,13 @@ static const float ResisList[3] = {10.0f, 5.0f, 1.0f};
 #define RESIS_N 3
 #define LINX_VOLT_LSB (4800.0/16383.0)
 
-static long zm_real(unsigned short data, double Rext, double VZM, int idx){
+static long long zm_real(unsigned short data, double Rext, double VZM, int idx){
     int m = data & 0xFFF; int e = (data >> 12) & 0xF;
     if (m & 0x800) m = -(((~m) & 0xFFF) + 1);
     if (idx < 0 || idx >= ZM_N || VZM == 0.0) return 0;
-    return (long)((double)m * (double)(1u << e) * Rext / (VZM * CoeffMapArr[idx]));
+    /* ×100000: 主机格式 value/100000=μΩ。实测 dev 未乘时输出 934(=934μΩ)、原厂 93,332,391, 比值≈100000 验证。
+     * 在取整前乘以保留精度。 */
+    return (long long)((double)m * (double)(1u << e) * Rext / (VZM * CoeffMapArr[idx]) * 100000.0);
 }
 int dnb_zm_index(unsigned char mant, unsigned char exp){
     for (int i = 0; i < ZM_N; i++) if (MantMapArr[i]==mant && ExpMapArr[i]==exp) return i;

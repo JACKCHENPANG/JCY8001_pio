@@ -233,3 +233,59 @@ main.c Flash 3916B, 零警告。
 
 - 无固件功能性改动留存。`lib/spi/spi.c` 的临时改动已回退。`src/main.c` 的 `SPI1->CR1` 已回到 `0x0354`。
 - 板上固件 = mode0 基线（sha `fd1baaa6`）。
+
+---
+
+## 追加（2026-05-30）⭐ CurrErr 根因找到并修复 — Saleae+sigrok 逻辑分析仪
+
+**推翻 5-29 收尾结论**（"软件已尽力/需改适配源码"）。实为 dev 固件 ZM 启动序列缺命令。
+
+**抓包方法**：Saleae 初代 Logic（USB `0925:3881`，FX2 芯片，sigrok `fx2lafw` 无桌面驱动，192.168.0.53 上）。探针 D0→MCU pin21(SCK) / D1→pin23(MOSI) / D2→pin22(MISO) + GND。`sigrok-cli --driver fx2lafw --config samplerate=12m -P spi:clk=D0:mosi=D1:miso=D2:cpol=0:cpha=0 -A spi=mosi-data`。帧格式 `00×7 0F [ID] [B2] [B3] [B4] FF×8 F0`，B2 高半字节=CMD。
+
+**原厂 ZM 启动序列（发 ID=2）vs dev**：
+| CMD | 命令 | 原厂 data | dev 修复前 |
+|---|---|---|---|
+| 0x0A | SetSrvReqMask | 0x75FF | 缺 |
+| 0x01 | INIT | 0x1009 | 缺 |
+| 0x0B | SetMode(Normal) | 0x0004 | 缺 |
+| 0x07 | SetZMFreq | 0x091A | 有 |
+| 0x06 | SetZMCurr | 0x0C01 | 有(本来就对) |
+
+**修复**：`dnb_start_zm()` 在 SetZMFreq 前补 SetSrvReqMask(0x75FF)→INIT(0x1009)→SetMode(Normal)。
+
+**实锤（dev 内部 SrvReq 调试寄存器 0x3E2A/2B）**：
+- 修复前：SrvReq=0x0280040E → flags=(>>4)&0xFFFF=0x0040 = bit6 **CurrErr**
+- 修复后：SrvReq=0x02800004 → flags=0x0000 **干净，CurrErr 消失**
+
+**剩余**：CurrErr 没了，但 BALZMDONE(bit7) 未置位、RE/IM=0（干净超时，非报错）。最可能=台架无真实可测阻抗回路（待精密电阻/分流器接已知阻抗）。下次：烧原厂跑长确认本台架能否测完成；试对齐频率到原厂 0x091A。
+
+⚠️ 无 CS 的 sigrok SPI 解码字节边界会漂（0x0F↔0x1E），长抓包不可靠，读内部调试寄存器更准。代码已改 main.c，待推 GitHub v2.11。板上=dev(含修复)。
+
+---
+
+## 追加（2026-05-30 下午）⭐⭐ ZM 全部打通 — dev 阻抗追平原厂 ⭐⭐
+
+**dev 实测 RE=934.86μΩ / IM=-66.84μΩ（@freq 0x091A, 1Ω档），原厂 933.3μΩ，误差 <0.2%。**
+JCY8001 dev 固件全功能（温度/电压/Modbus全协议/CurrErr/ZM阻抗/μΩ数值）彻底追平原厂。
+
+继 CurrErr 修复后，又破两关：
+
+### 关 2：ZM 测量不完成（BalZMDone 永不置位）
+- 现象：CurrErr 消除后，dev ZM 启动正常但 SrvReq 冻结 0x02800004（flags=0，无 done 无错），RE=0 超时。
+- 排除：超时↑(12→50→100)、频率对齐原厂 0x091A、ZM 中跳过 VM 读取、SetThVolt/SetThTemp boot 配置 —— 均无效。
+- **根因（读原厂 `firmware/Threads/MeasThread.c`）**：原厂 **不死等 BalZMDone**，而是 `if(TimeCount >= ZMFreq.ConvTime)` 固定转换时间到就读 Zreal/Zimag（检 FSMStatus==Normal、无 VM/ZM_ADCErr）。dev 原来纯靠 BalZMDone(bit7) → 该位本配置不置位 → 永不读。
+- **修复**：dev ZM 轮询改 `if((flags & BALZMDONE) || (++zm_cycles >= ZM_CONV_CYCLES))` 就读，ZM_CONV_CYCLES=100(~6-8s)，读前检 ZM/VM_ADCErr。
+
+### 关 3：μΩ 数值差 10 万倍
+- dev 输出 934，原厂 93,332,391，比值 ≈100000。
+- **根因**：`lib/dnb_zm/dnb_zm.c` `zm_real()` 算出阻抗(μΩ)但未乘主机要求的 ×100000（主机 value/100000=μΩ）。
+- **修复**：zm_real 返回类型 long→long long，取整前 `* 100000.0`。
+
+### 关键认知
+- **`firmware/` 目录就是 JCY8001 改适配源码**（NDB110x.uvprojx + JCY8001_combined.hex + `#define LinkLength 1 //JCY8001单通道`），之前误判"只有 JCY5001 base、缺改适配版"。直接读它：DNB11xxThread(boot init: 枚举→Init→SetMode→SetThVolt→SetThTemp)、MeasThread.c(ZM 轮询 ConvTime 逻辑)、Driver_DNB11xx.h SrvReqData_Union_t(bit10=CurrErr/bit11=BalZMDone/bit12=ZMADCErr)。
+- dev 的 `flags=(ss>>4)&0xFFFF` 位提取正确（BalZMDone=flags bit7=raw bit11）。
+
+### 改动文件
+- `src/main.c`：dnb_start_zm 加 SetSrvReqMask+INIT+SetMode；dnb_set_thresholds boot 配置；ZM 轮询改 ConvTime 门 + ZM 中跳 VM 读取。
+- `lib/dnb_zm/dnb_zm.c`：zm_real ×100000、long long。
+- 全部编译验证、实机 934.86μΩ。**待推 GitHub v2.11**。板上=dev(全功能)。

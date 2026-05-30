@@ -362,6 +362,18 @@ static void dnb_init_ic(uint8_t id, uint8_t nr_of_ics) {
     dnb_xfer(id, DNB_CMD_INIT, data, DNB_HEAD, DNB_CHAIN_LEN, 1);
 }
 
+/* ── 原厂 boot 额外配置 (JCY8001 源 DNB11xxThread, 在 Init 后): SetThVolt + SetThTemp。
+ * 把电压/温度保护阈值设到最宽 (原厂值), 否则默认阈值可能把电芯判越界→芯片进保护→ZM 不完成(BalZMDone 不置位)。
+ * 原厂: SetThVolt(0xff,Over=0xff,Under=0)=Data 0xFF00; SetThTemp(0xff,Over=0x7f,Under=0x80)=Data 0x7F80。 */
+#define DNB_CMD_SETTHVOLT  0x03
+#define DNB_CMD_SETTHTEMP  0x04
+static void dnb_set_thresholds(void) {
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETTHVOLT, 0xFF00, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETTHTEMP, 0x7F80, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+}
+
 /* ── 读测量芯片 (ID=2) 的 GetData/GetStatus, 链长 ics=DNB_CHAIN_LEN ── */
 static uint32_t dnb_get_data(uint8_t id, uint8_t data_type) {
     return dnb_xfer(id, DNB_CMD_GETDATA, data_type, DNB_HEAD, DNB_CHAIN_LEN, 1);
@@ -374,9 +386,12 @@ static uint32_t dnb_get_status(uint8_t id, uint8_t status_type) {
 /* ── 阻抗测量 (ZM) ──────────────────────────────────────────────────────── */
 #define DNB_CMD_SETZMCURR  0x06   // 设置 ZM 电流/使能 (EnZM=bit11)
 #define DNB_CMD_SETZMFREQ  0x07   // 设置 ZM 频率 (FRQMantissa|FRQExp<<8|LFNS<<12)
+#define DNB_CMD_SETSRVREQMASK 0x0A // 设置服务请求掩码 (原厂ZM前置, 抓包 data=0x75FF)
 #define DNB_DATA_ZREAL     0x07   // GetData: 阻抗实部 (ZMantissa b4-15, ZExp b16-19)
 #define DNB_DATA_ZIMAG     0x08   // GetData: 阻抗虚部
-#define DNB_SRVREQ_BALZMDONE  (1u << 7)   // SrvReq bit7: 均衡/阻抗测量完成
+#define DNB_SRVREQ_BALZMDONE  (1u << 7)   // SrvReq flags bit7: 均衡/阻抗测量完成
+#define DNB_SRVREQ_VMADCERR   (1u << 2)   // flags bit2: VM ADC 错误
+#define DNB_SRVREQ_ZMADCERR   (1u << 8)   // flags bit8: ZM ADC 错误
 
 /* 启动一次阻抗测量: SetZMFreq → SetZMCurr(EnZM=1)。发到测量芯片 U8。
  * HiPass(增益): jcy_zm_gain 1→00, 4→01, 16→10。
@@ -389,6 +404,14 @@ static void dnb_start_zm(void) {
         hipass = 0x2;                  // gain16
     }
     resis_select((uint8_t)jcy_samp_res);   // 选通采样电阻 (把对应档接进 ZM 电流回路)
+    dnb_delay_cycles(8000);
+    // ── 原厂 ZM 前置序列 (逻辑分析仪抓包确认, 发 ID=2): SetSrvReqMask → INIT → SetMode(Normal) ──
+    // 缺这三条则 SetZMCurr 后报 CurrErr (激励电流建立不起来). 数值复制原厂抓包.
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETSRVREQMASK, 0x75FF, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_INIT, 0x1009, DNB_HEAD, DNB_CHAIN_LEN, 1);
+    dnb_delay_cycles(8000);
+    dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETMODE, DNB_SETMODE_NORMAL, DNB_HEAD, DNB_CHAIN_LEN, 1);
     dnb_delay_cycles(8000);
     dnb_xfer(DNB_MEAS_ID, DNB_CMD_SETZMFREQ, freq, DNB_HEAD, DNB_CHAIN_LEN, 1);
     dnb_delay_cycles(8000);
@@ -558,6 +581,8 @@ int main(void)
     dnb_init_ic(1, DNB_CHAIN_LEN);
     dnb_delay_cycles(8000);
     dnb_init_ic(DNB_MEAS_ID, DNB_CHAIN_LEN);
+    dnb_delay_cycles(8000);
+    dnb_set_thresholds();        // 原厂 boot: 设宽电压/温度保护阈值(防默认阈值误触发保护挡住 ZM)
     dnb_delay_cycles(80000);
     jcy_status = 0x0001;
 
@@ -568,7 +593,7 @@ int main(void)
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
     uint8_t  bal_running = 0;       // 均衡进行中
-#define ZM_TIMEOUT_CYCLES  12       // ~6s 没完成则放弃, 关 EnZM 恢复 VM
+#define ZM_CONV_CYCLES  100       // ZM 转换时间门: 等够这么多轮询周期就读结果(原厂按 ConvTime, 不死等 BalZMDone). 100周期~6-8s, 安全超过原厂~4-5s转换时间
 
 #define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
 
@@ -590,6 +615,9 @@ int main(void)
             if (dnb_ic_count > 0 && measure_ticks >= MEASURE_INTERVAL) {
                 measure_ticks = 0;
 
+                // ⚠️ ZM 进行中绝不读 VM/温度: GetData(MainVolt) 会打断正在进行的阻抗测量
+                // (VM 与 ZM 共用 ADC), 导致 BALZMDONE 永不置位、测量永不完成。原厂 ZM 期间只轮询 SRVREQ。
+                if (!zm_running) {
                 uint32_t gs = dnb_get_status(DNB_MEAS_ID, DNB_STATUS_GENERAL);
                 jcy_dnb_gs_hi = (uint16_t)(gs >> 16); jcy_dnb_gs_lo = (uint16_t)gs;
                 dnb_delay_cycles(8000);
@@ -607,6 +635,7 @@ int main(void)
                 uint16_t f = (uint16_t)((uv >> 4) & 0x3FFF);
                 jcy_dnb_volt_raw = f;
                 jcy_voltage = (uint16_t)(((uint32_t)f * 48000UL) / 16383UL + 12000UL);
+                }   // end if(!zm_running) — ZM 进行中跳过 VM/温度读取
 
                 // 阻抗测量 (ZM): FC05 线圈触发 → 启动 → 轮询 BalZMDone → 读 Zreal/Zimag/VZM
                 if (zm_start_req) {
@@ -622,33 +651,37 @@ int main(void)
                     uint32_t ss = dnb_get_status(DNB_MEAS_ID, DNB_STATUS_SRVREQ);
                     jcy_dnb_ss_hi = (uint16_t)(ss >> 16); jcy_dnb_ss_lo = (uint16_t)ss;
                     uint16_t flags = (uint16_t)((ss >> 4) & 0xFFFF);
-                    if (flags & DNB_SRVREQ_BALZMDONE) {        // 测量完成 → 读结果
-                        dnb_delay_cycles(8000);
-                        jcy_zm_re  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZREAL) >> 4) & 0xFFFF);
-                        dnb_delay_cycles(8000);
-                        jcy_zm_im  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZIMAG) >> 4) & 0xFFFF);
-                        dnb_delay_cycles(8000);
-                        jcy_zm_vzm = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_VZM)   >> 4) & 0xFFFF);
-                        // 换算成 μΩ (64位×100000), 频率索引由 0x4200 的 M/E 反查
-                        {
-                            int idx = dnb_zm_index((uint8_t)(jcy_zm_freq_set & 0xFF),
-                                                   (uint8_t)((jcy_zm_freq_set >> 8) & 0x0F));
-                            long long zr = 0, zi = 0;
-                            dnb_zm_convert(jcy_zm_re, jcy_zm_im, jcy_zm_vzm,
-                                           (uint8_t)jcy_samp_res, idx, &zr, &zi);
-                            jcy_zm_re64 = zr;
-                            jcy_zm_im64 = zi;
+                    // 原厂 MeasThread.c 逻辑: 不死等 BalZMDone(本配置下该位不置位), 而是等转换时间(ZM_CONV_CYCLES)
+                    // 到了就读 Zreal/Zimag/VZM; BalZMDone 若提前置位也立即读。只要无 ZM/VM ADC 错误即认有效。
+                    if ((flags & DNB_SRVREQ_BALZMDONE) || (++zm_cycles >= ZM_CONV_CYCLES)) {
+                        if (flags & (DNB_SRVREQ_ZMADCERR | DNB_SRVREQ_VMADCERR)) {   // ADC 错误 → 无有效阻抗
+                            dnb_delay_cycles(8000);
+                            dnb_stop_zm();
+                            zm_running = 0;
+                            jcy_status = 0x0005;
+                        } else {
+                            dnb_delay_cycles(8000);
+                            jcy_zm_re  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZREAL) >> 4) & 0xFFFF);
+                            dnb_delay_cycles(8000);
+                            jcy_zm_im  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZIMAG) >> 4) & 0xFFFF);
+                            dnb_delay_cycles(8000);
+                            jcy_zm_vzm = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_VZM)   >> 4) & 0xFFFF);
+                            // 换算成 μΩ (64位×100000), 频率索引由 0x4200 的 M/E 反查
+                            {
+                                int idx = dnb_zm_index((uint8_t)(jcy_zm_freq_set & 0xFF),
+                                                       (uint8_t)((jcy_zm_freq_set >> 8) & 0x0F));
+                                long long zr = 0, zi = 0;
+                                dnb_zm_convert(jcy_zm_re, jcy_zm_im, jcy_zm_vzm,
+                                               (uint8_t)jcy_samp_res, idx, &zr, &zi);
+                                jcy_zm_re64 = zr;
+                                jcy_zm_im64 = zi;
+                            }
+                            jcy_zm_done = 1;
+                            jcy_status  = 0x0006;   // 测量完成
+                            dnb_delay_cycles(8000);
+                            dnb_stop_zm();          // 关 EnZM, 恢复 VM
+                            zm_running = 0;
                         }
-                        jcy_zm_done = 1;
-                        jcy_status  = 0x0006;   // 测量完成
-                        dnb_delay_cycles(8000);
-                        dnb_stop_zm();          // 关 EnZM, 恢复 VM
-                        zm_running = 0;
-                    } else if (++zm_cycles >= ZM_TIMEOUT_CYCLES) {   // 超时放弃
-                        dnb_delay_cycles(8000);
-                        dnb_stop_zm();          // 关 EnZM, 恢复 VM (否则 VM 一直被压住读 0)
-                        zm_running = 0;
-                        jcy_status = 0x0005;    // 硬件/ADC 错误 (无有效电芯无法测阻抗)
                     }
                 } else {
                     jcy_status = 0x0000;        // 空闲
