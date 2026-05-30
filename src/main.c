@@ -53,6 +53,7 @@ volatile uint16_t jcy_bal_mode;      // 0x0080 均衡模式 0=时间 1=电压
 volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动/停止
 volatile uint16_t jcy_zm_mode;       // 0x4300 ZM 测量模式: 0=普通, 1=低阻低频(强制 LFNS+增益16)
 volatile uint16_t jcy_zm_fast;       // 0x4340 ZM 速度: 0=标准(转换门余量足,稳), 1=快速(余量紧,~省一半时间)
+volatile uint16_t jcy_zm_convovr;    // 0x4360 调试: 转换门周期数覆盖(0=按频率自动). 用于标定最低收敛周期
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -81,6 +82,7 @@ static void init_registers(void) {
     jcy_bal_pwm = 0; jcy_bal_mode = 0; bal_start_req = 0;
     jcy_zm_mode = 0;
     jcy_zm_fast = 0;
+    jcy_zm_convovr = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
@@ -129,6 +131,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4280: return jcy_zm_gain;
         case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: return jcy_zm_fast;          // ZM 速度 0=标准 1=快速
+        case 0x4360: return jcy_zm_convovr;       // 转换门覆盖(调试)
         default:     return 0x0000;
     }
 }
@@ -161,6 +164,7 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4F09: jcy_zm_gain  = val; break;              // 群发 ZM 增益
         case 0x4300: jcy_zm_mode  = val; break;              // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: jcy_zm_fast  = val; break;              // ZM 速度 0=标准 1=快速
+        case 0x4360: jcy_zm_convovr = val; break;            // 转换门覆盖(调试)
         case 0x4F0A: jcy_zm_mode  = val; break;              // 群发 ZM 测量模式
     }
 }
@@ -661,6 +665,7 @@ int main(void)
                         uint32_t base = jcy_zm_fast ? 3u : 6u;
                         uint32_t tc = conv_ms / div + base;
                         zm_conv_target = (tc > 9000u) ? 9000u : (uint16_t)tc;
+                        if (jcy_zm_convovr) zm_conv_target = jcy_zm_convovr;   // 调试覆盖(标定最低周期)
                     }
                 } else if (zm_running) {
                     dnb_delay_cycles(8000);
