@@ -567,6 +567,14 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             else if (addr == 0x0040 || addr == 0x0F01) bal_start_req = on;
             else if (addr == 0x0080 || addr == 0x0F02) jcy_bal_mode  = on;
             else if (addr == 0x0010 && on)               flash_save_cal();   // 保存采样电阻校准到Flash
+            else if (addr == 0x0020 && on) {              // OTA: 进入 Bootloader 在线升级
+                *(volatile uint32_t*)0x4002101Cu |= (1u<<28)|(1u<<27); // RCC_APB1ENR PWREN|BKPEN
+                *(volatile uint32_t*)0x40007000u |= (1u<<8);           // PWR_CR DBP 解锁备份域
+                *(volatile uint32_t*)0x40006C04u  = 0xB007u;           // BKP_DR1 = 升级标志
+                modbus_reply(rx, 6);                                   // 先回复上位机
+                for (volatile uint32_t i=0;i<300000;i++){}             // 等串口发完
+                *(volatile uint32_t*)0xE000ED0Cu = 0x05FA0004u;        // 系统复位 → 进Bootloader
+            }
             modbus_reply(rx, 6); break;   // FC05 回显请求
         }
         case 0x06: {
@@ -609,6 +617,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
 
 int main(void)
 {
+    SCB->VTOR = 0x08004000u;   // OTA: App 重定位到 0x08004000, 中断向量表偏移
     RCC->CFGR = 0x00000000;
     RCC->CR &= ~(RCC_CR_HSEON | RCC_CR_PLLON);
     RCC->CR |= RCC_CR_HSION;
