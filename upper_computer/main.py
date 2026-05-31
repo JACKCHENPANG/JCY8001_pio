@@ -107,7 +107,9 @@ class ModbusError(Exception):
 class Modbus:
     """线程安全的 Modbus RTU 主站。所有事务持锁串行执行。"""
 
-    def __init__(self, addr=0x01, timeout=0.3, retries=3):
+    def __init__(self, addr=0x01, timeout=1.0, retries=4):
+        # timeout = 单帧响应总等待上限(秒)。固件在 ZM 测量中单个忙窗口可 >0.3s,
+        # 故响应需耐心等到 deadline, 不能一遇空读就放弃 (见 _read_exact)。
         self.ser = None
         self.addr = addr
         self.timeout = timeout
@@ -120,7 +122,7 @@ class Modbus:
         self.ser = serial.Serial(
             port=port, baudrate=baud, bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE,
-            timeout=self.timeout, write_timeout=self.timeout,
+            timeout=0.05, write_timeout=self.timeout,   # 单次read短超时, 总等待由 _read_exact 的 deadline 控制
         )
 
     def close(self):
@@ -149,14 +151,14 @@ class Modbus:
         return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
     def _read_exact(self, n: int) -> bytes:
+        # 持续累积读取直到凑齐 n 字节或 deadline 超时。不能一遇空读就 break——
+        # 固件 ZM 测量中可能延迟若干百 ms 才回包, 早退会误判超时。
         buf = bytearray()
         deadline = time.time() + self.timeout
         while len(buf) < n and time.time() < deadline:
             chunk = self.ser.read(n - len(buf))
             if chunk:
                 buf += chunk
-            else:
-                break
         return bytes(buf)
 
     def _txn(self, pdu: bytes, resp_len: int) -> bytes:
