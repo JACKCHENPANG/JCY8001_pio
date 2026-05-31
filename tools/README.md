@@ -51,3 +51,16 @@ python3 eis_nyquist.py eis.csv [nyquist.png]
 **标定流程**: ①电桥量出某档采样电阻实际阻值(mΩ) ②FC06写对应寄存器 ③FC05写线圈0x0010存Flash ④掉电重启自动加载。阻抗换算用标定后的实际阻值(Rext), 消除电阻容差带来的档间误差。
 
 **DNB自愈 (v2.14)**: 运行时温度+电压原始值连续3次(~1.5s)都为0判定DNB掉枚举, 自动重跑枚举(接触瞬断自恢复)。调试寄存器0x3E30=自愈重枚举次数。
+
+## EIS 布线/接触补偿 (AN2001) — tools/eis_wiring_comp.py
+测量值含引线感性/阻性耦合 + 接触电阻偏移(每频率恒定)。一阶修正:
+`Re_comp=Re+Mre·f+Rpar`, `Im_comp=Im+Mim·f+Ipar` (μΩ, f单位Hz)。
+
+```bash
+# 1.校准: 接参考件(短路件/精密电阻/电化学工作站真值)扫频, 拟合4参数
+python3 eis_wiring_comp.py cal ref.csv --re-true 0 --im-true 0 -o wiring.json   # 短路件
+python3 eis_wiring_comp.py cal ref.csv --truth truth.csv -o wiring.json          # 电化学工作站逐频真值
+# 2.应用: 补偿被测扫频
+python3 eis_wiring_comp.py apply meas.csv wiring.json -o meas_comp.csv
+```
+真值来源: 短路件(真值=0,测纯布线偏移最直接) / 精密低阻标准 / 电化学工作站(EIS级仪器)测同一件做逐频真值。
