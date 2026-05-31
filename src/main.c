@@ -80,9 +80,9 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0200;
+    jcy_fw_version = 0x0217;   // v2.17 (固件自主EIS扫频)
     jcy_git_rev    = 0x0001;
-    jcy_build_date = 0x0504;
+    jcy_build_date = 0x0531;   // 2026-05-31 (MMDD)
     jcy_dnb_debug  = 0;
     jcy_dnb_volt_raw = 0;
     jcy_dnb_temp_raw = 0;
