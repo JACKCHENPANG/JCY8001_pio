@@ -444,7 +444,7 @@ static uint32_t dnb_get_status(uint8_t id, uint8_t status_type) {
 static void dnb_start_zm(void) {
     uint16_t freq   = jcy_zm_freq_set;
     uint8_t  hipass = (jcy_zm_gain >= 16) ? 0x2 : (jcy_zm_gain >= 4 ? 0x1 : 0x0);
-    if (jcy_zm_mode == 1) {            // 低阻低频模式
+    if (jcy_zm_mode == 1) {            // 低阻低频模式: LFNS + gain16 (与增益独立)
         freq  |= (1u << 12);           // LFNS on
         hipass = 0x2;                  // gain16
     }
