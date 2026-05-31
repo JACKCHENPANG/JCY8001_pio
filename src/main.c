@@ -34,6 +34,7 @@ volatile uint16_t jcy_dnb_gs_lo;     // GeneralStatus low word
 volatile uint16_t jcy_dnb_ss_hi;     // SrvReqStatus high word
 volatile uint16_t jcy_dnb_ss_lo;     // SrvReqStatus low word
 volatile uint16_t jcy_dnb_phase_dbg; // measurement phase / state
+volatile uint16_t jcy_reenum_count;  // DNB 自动重枚举次数 (自愈计数)
 // ── 阻抗测量 (ZM/EIS) ──
 volatile uint16_t jcy_zm_re;         // Zreal 原始 (ZMantissa|ZExponent<<12), 调试
 volatile uint16_t jcy_zm_im;         // Zimag 原始, 调试
@@ -105,6 +106,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3E2A: return jcy_dnb_ss_hi;
         case 0x3E2B: return jcy_dnb_ss_lo;
         case 0x3E2C: return jcy_dnb_phase_dbg;
+        case 0x3E30: return jcy_reenum_count;  // DNB 自愈重枚举次数
         case 0x3300: return jcy_temp;
         case 0x3340: return jcy_voltage;
         case 0x3380: return jcy_status;
@@ -132,7 +134,39 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: return jcy_zm_fast;          // ZM 速度 0=标准 1=快速
         case 0x4360: return jcy_zm_convovr;       // 转换门覆盖(调试)
+        case 0x40D0: return (uint16_t)(dnb_zm_get_resis(0)*1000.0f+0.5f);  // 10Ω档实际阻值(mΩ)
+        case 0x40D1: return (uint16_t)(dnb_zm_get_resis(1)*1000.0f+0.5f);  // 5Ω档(mΩ)
+        case 0x40D2: return (uint16_t)(dnb_zm_get_resis(2)*1000.0f+0.5f);  // 1Ω档(mΩ)
         default:     return 0x0000;
+    }
+}
+
+/* ── 采样电阻校准持久化 (Flash 末页 0x0803F800, F103RC 2KB/页) ── */
+#define CAL_FLASH_ADDR  0x0803F800UL
+#define CAL_MAGIC       0xCA1B
+static void flash_save_cal(void){
+    uint16_t d[4];
+    d[0]=CAL_MAGIC;
+    d[1]=(uint16_t)(dnb_zm_get_resis(0)*1000.0f+0.5f);  // 10Ω档 mΩ
+    d[2]=(uint16_t)(dnb_zm_get_resis(1)*1000.0f+0.5f);  // 5Ω档
+    d[3]=(uint16_t)(dnb_zm_get_resis(2)*1000.0f+0.5f);  // 1Ω档
+    FLASH->KEYR=0x45670123; FLASH->KEYR=0xCDEF89AB;     // 解锁 FPEC
+    while(FLASH->SR & FLASH_SR_BSY);
+    FLASH->CR|=FLASH_CR_PER; FLASH->AR=CAL_FLASH_ADDR; FLASH->CR|=FLASH_CR_STRT;
+    while(FLASH->SR & FLASH_SR_BSY); FLASH->CR&=~FLASH_CR_PER;   // 擦除该页
+    for(int i=0;i<4;i++){
+        FLASH->CR|=FLASH_CR_PG;
+        *(volatile uint16_t*)(CAL_FLASH_ADDR+i*2u)=d[i];
+        while(FLASH->SR & FLASH_SR_BSY); FLASH->CR&=~FLASH_CR_PG;
+    }
+    FLASH->CR|=FLASH_CR_LOCK;
+}
+static void flash_load_cal(void){
+    const volatile uint16_t *p=(const volatile uint16_t*)CAL_FLASH_ADDR;
+    if(p[0]!=CAL_MAGIC) return;          // 无有效标定 → 用默认 10/5/1Ω
+    for(int i=0;i<3;i++){
+        uint16_t m=p[1+i];
+        if(m>50 && m<60000) dnb_zm_set_resis(i,(float)m/1000.0f);
     }
 }
 
@@ -149,6 +183,9 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4000: jcy_zm_freq = val; break;
         case 0x4040: jcy_zm_avg = val; break;
         case 0x40C0: jcy_samp_res = val & 0x03; break;       // 采样电阻 0~3
+        case 0x40D0: dnb_zm_set_resis(0,(float)val/1000.0f); break;  // 校准 10Ω档 (mΩ)
+        case 0x40D1: dnb_zm_set_resis(1,(float)val/1000.0f); break;  // 校准 5Ω档
+        case 0x40D2: dnb_zm_set_resis(2,(float)val/1000.0f); break;  // 校准 1Ω档
         case 0x4100: jcy_bal_volt = val & 0xFF; break;       // 均衡电压 0~255
         case 0x4140: jcy_bal_time = val & 0xFF; break;       // 均衡时间 0~255
         case 0x4180: jcy_bal_pwm = val & 0x0F; break;        // PWM 0~14
@@ -529,6 +566,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             if      (addr == 0x0000 || addr == 0x0F00) zm_start_req  = on;
             else if (addr == 0x0040 || addr == 0x0F01) bal_start_req = on;
             else if (addr == 0x0080 || addr == 0x0F02) jcy_bal_mode  = on;
+            else if (addr == 0x0010 && on)               flash_save_cal();   // 保存采样电阻校准到Flash
             modbus_reply(rx, 6); break;   // FC05 回显请求
         }
         case 0x06: {
@@ -577,6 +615,7 @@ int main(void)
     SystemCoreClock = 8000000;
 
     init_registers();
+    flash_load_cal();   // 从Flash加载采样电阻校准(若有), 覆盖默认10/5/1Ω
     usart2_init();
     spi1_init();
     resis_gpio_init();   // 采样电阻量程选通 GPIO (PB5/PB3/PD2)
@@ -600,8 +639,10 @@ int main(void)
     uint32_t measure_ticks = 0;
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
+    uint16_t dnb_bad_count = 0;     // DNB 连续无响应计数 (自愈触发)
     uint16_t zm_conv_target = 100;  // 本次 ZM 的转换时间门 (按频率 exp 自适应, ZM 启动时算)
     uint8_t  bal_running = 0;       // 均衡进行中
+#define DNB_BAD_LIMIT  3           // 连续3次(~1.5s)温压全0 = DNB掉枚举, 触发自动重枚举
 #define ZM_CONV_CYCLES  100       // ZM 转换时间门: 等够这么多轮询周期就读结果(原厂按 ConvTime, 不死等 BalZMDone). 100周期~6-8s, 安全超过原厂~4-5s转换时间
 
 #define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
@@ -644,6 +685,25 @@ int main(void)
                 uint16_t f = (uint16_t)((uv >> 4) & 0x3FFF);
                 jcy_dnb_volt_raw = f;
                 jcy_voltage = (uint16_t)(((uint32_t)f * 48000UL) / 16383UL + 12000UL);
+
+                // ── DNB 自愈: 温度+电压原始值同时为0 = DNB掉枚举(电池/夹子接触瞬断). ──
+                // 连续 DNB_BAD_LIMIT 次判定掉线 → 自动重跑枚举+Init+阈值(与boot同序列), 接触恢复后自愈, 不用手动复位.
+                if (jcy_dnb_temp_raw == 0 && jcy_dnb_volt_raw == 0) {
+                    if (++dnb_bad_count >= DNB_BAD_LIMIT) {
+                        dnb_bad_count = 0;
+                        jcy_reenum_count++;
+                        dnb_ic_count = dnb_enumerate();
+                        if (dnb_ic_count == 0) dnb_ic_count = DNB_CHAIN_LEN;
+                        dnb_init_ic(1, DNB_CHAIN_LEN);
+                        dnb_delay_cycles(8000);
+                        dnb_init_ic(DNB_MEAS_ID, DNB_CHAIN_LEN);
+                        dnb_delay_cycles(8000);
+                        dnb_set_thresholds();
+                        dnb_delay_cycles(8000);
+                    }
+                } else {
+                    dnb_bad_count = 0;
+                }
                 }   // end if(!zm_running) — ZM 进行中跳过 VM/温度读取
 
                 // 阻抗测量 (ZM): FC05 线圈触发 → 启动 → 轮询 BalZMDone → 读 Zreal/Zimag/VZM

@@ -10,4 +10,8 @@ int dnb_zm_index(unsigned char mant, unsigned char exp);
 void dnb_zm_convert(unsigned short re_raw, unsigned short im_raw, unsigned short vzm_raw,
                     unsigned char samp_sel, int idx, long long *zr, long long *zi);
 
+/* 采样电阻校准: 设置/读取某档实际阻值(Ω). sel 0=10Ω 1=5Ω 2=1Ω 档 */
+void  dnb_zm_set_resis(int sel, float ohms);
+float dnb_zm_get_resis(int sel);
+
 #endif
