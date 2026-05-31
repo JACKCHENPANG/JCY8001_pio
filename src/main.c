@@ -67,7 +67,7 @@ static void init_registers(void) {
     jcy_voltage    = 0;
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
-    jcy_zm_avg     = 10;
+    jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
     jcy_fw_version = 0x0200;
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0504;
@@ -648,6 +648,8 @@ int main(void)
     uint32_t measure_ticks = 0;
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
+    long long zm_acc_re = 0, zm_acc_im = 0;  // ZM平均累加器
+    uint16_t zm_avg_cnt = 0;       // 已累加次数
     uint16_t dnb_bad_count = 0;     // DNB 连续无响应计数 (自愈触发)
     uint16_t zm_conv_target = 100;  // 本次 ZM 的转换时间门 (按频率 exp 自适应, ZM 启动时算)
     uint8_t  bal_running = 0;       // 均衡进行中
@@ -724,6 +726,7 @@ int main(void)
                     dnb_start_zm();
                     zm_running = 1;
                     zm_cycles  = 0;
+                    zm_acc_re = 0; zm_acc_im = 0; zm_avg_cnt = 0;   // 重置平均
                     // 转换门按频率 exp 自适应: ConvTime=max(1100, 1050*2^(7-exp)) ms (原厂公式)。
                     // 低频(exp小)转换久(到~67s), 必须等够否则读到未完成的值。~40ms/cycle 保守(实测~55, 偏长安全)。
                     {
@@ -763,14 +766,24 @@ int main(void)
                                 long long zr = 0, zi = 0;
                                 dnb_zm_convert(jcy_zm_re, jcy_zm_im, jcy_zm_vzm,
                                                (uint8_t)jcy_samp_res, idx, &zr, &zi);
-                                jcy_zm_re64 = zr;
-                                jcy_zm_im64 = zi;
+                                zm_acc_re += zr; zm_acc_im += zi;   // 累加(平均)
                             }
-                            jcy_zm_done = 1;
-                            jcy_status  = 0x0006;   // 测量完成
-                            dnb_delay_cycles(8000);
-                            dnb_stop_zm();          // 关 EnZM, 恢复 VM
-                            zm_running = 0;
+                            zm_avg_cnt++;
+                            {
+                                uint16_t navg = (jcy_zm_avg < 1) ? 1 : (jcy_zm_avg > 64 ? 64 : jcy_zm_avg);
+                                if (zm_avg_cnt < navg) {            // 还没够 → 再测一次累加
+                                    dnb_delay_cycles(8000); dnb_stop_zm();
+                                    dnb_delay_cycles(8000); dnb_start_zm(); zm_cycles = 0;
+                                } else {                            // 够了 → 输出平均
+                                    jcy_zm_re64 = zm_acc_re / navg;
+                                    jcy_zm_im64 = zm_acc_im / navg;
+                                    jcy_zm_done = 1;
+                                    jcy_status  = 0x0006;   // 测量完成
+                                    dnb_delay_cycles(8000);
+                                    dnb_stop_zm();          // 关 EnZM, 恢复 VM
+                                    zm_running = 0;
+                                }
+                            }
                         }
                     }
                 } else {
