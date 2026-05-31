@@ -55,6 +55,18 @@ volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动
 volatile uint16_t jcy_zm_mode;       // 0x4300 ZM 测量模式: 0=普通, 1=低阻低频(强制 LFNS+增益16)
 volatile uint16_t jcy_zm_fast;       // 0x4340 ZM 速度: 0=标准(转换门余量足,稳), 1=快速(余量紧,~省一半时间)
 volatile uint16_t jcy_zm_convovr;    // 0x4360 调试: 转换门周期数覆盖(0=按频率自动). 用于标定最低收敛周期
+// ── 固件自主扫频 (EIS sweep): 上位机一次性下发频点表→触发→固件逐点测→边跑可边读/完成批量读 ──
+#define SWEEP_MAX  64                  // 最大频点数
+volatile uint16_t jcy_sweep_freq[SWEEP_MAX]; // 0x4400+idx 频点表 (16位 M/E 字, 同 0x4200 格式)
+volatile uint16_t jcy_sweep_count;           // 0x43C0 频点数 N (1~64)
+volatile uint16_t jcy_sweep_state;           // 0x3E40 状态 0=空闲 1=跑中 2=完成 3=中止
+volatile uint16_t jcy_sweep_idx;             // 0x3E41 已完成点数 (= 下一个待测索引)
+volatile int64_t  jcy_sweep_re[SWEEP_MAX];   // 0x3400+idx*4 各点实部 (×100000=μΩ)
+volatile int64_t  jcy_sweep_im[SWEEP_MAX];   // 0x3500+idx*4 各点虚部
+volatile uint16_t jcy_sweep_vzm[SWEEP_MAX];  // 0x3600+idx 各点 VZM 原始
+volatile uint16_t jcy_sweep_fecho[SWEEP_MAX];// 0x3640+idx 各点实际所用频率码 (M/E)
+volatile uint8_t  sweep_start_req;           // coil 0x00C0 电平: 1=启动/进行 0=停止
+volatile uint8_t  sweep_running;             // 扫频进行中 (内部)
 
 #define DNB_BUFLEN  512U
 static uint8_t dnb_tx[DNB_BUFLEN];
@@ -84,9 +96,17 @@ static void init_registers(void) {
     jcy_zm_mode = 0;
     jcy_zm_fast = 0;
     jcy_zm_convovr = 0;
+    jcy_sweep_count = 0; jcy_sweep_state = 0; jcy_sweep_idx = 0;
+    sweep_start_req = 0; sweep_running = 0;
 }
 
 static uint16_t get_reg(uint16_t addr) {
+    // ── 扫频结果块 (64位 RE/IM 大端, 每点4寄存器; VZM/频率码 每点1寄存器) ──
+    if (addr >= 0x3400 && addr <= 0x34FF) { uint16_t i=(addr-0x3400)>>2, s=(addr-0x3400)&3; return (uint16_t)(jcy_sweep_re[i] >> ((3-s)*16)); }
+    if (addr >= 0x3500 && addr <= 0x35FF) { uint16_t i=(addr-0x3500)>>2, s=(addr-0x3500)&3; return (uint16_t)(jcy_sweep_im[i] >> ((3-s)*16)); }
+    if (addr >= 0x3600 && addr <= 0x363F) return jcy_sweep_vzm[addr-0x3600];
+    if (addr >= 0x3640 && addr <= 0x367F) return jcy_sweep_fecho[addr-0x3640];
+    if (addr >= 0x4400 && addr <= 0x443F) return jcy_sweep_freq[addr-0x4400];
     switch (addr) {
         case 0x3E00: return jcy_ch_count;
         case 0x3E01: return jcy_version;
@@ -134,6 +154,9 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: return jcy_zm_fast;          // ZM 速度 0=标准 1=快速
         case 0x4360: return jcy_zm_convovr;       // 转换门覆盖(调试)
+        case 0x43C0: return jcy_sweep_count;      // 扫频频点数 N
+        case 0x3E40: return jcy_sweep_state;      // 扫频状态 0空闲/1跑中/2完成/3中止
+        case 0x3E41: return jcy_sweep_idx;        // 已完成点数
         case 0x40D0: return (uint16_t)(dnb_zm_get_resis(0)*1000.0f+0.5f);  // 10Ω档实际阻值(mΩ)
         case 0x40D1: return (uint16_t)(dnb_zm_get_resis(1)*1000.0f+0.5f);  // 5Ω档(mΩ)
         case 0x40D2: return (uint16_t)(dnb_zm_get_resis(2)*1000.0f+0.5f);  // 1Ω档(mΩ)
@@ -171,6 +194,7 @@ static void flash_load_cal(void){
 }
 
 static void set_reg(uint16_t addr, uint16_t val) {
+    if (addr >= 0x4400 && addr <= 0x443F) { jcy_sweep_freq[addr-0x4400] = val; return; }  // 写频点表
     switch (addr) {
         case 0x3E00: jcy_ch_count = val; break;
         case 0x3E01: jcy_version = val; break;
@@ -203,6 +227,27 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4340: jcy_zm_fast  = val; break;              // ZM 速度 0=标准 1=快速
         case 0x4360: jcy_zm_convovr = val; break;            // 转换门覆盖(调试)
         case 0x4F0A: jcy_zm_mode  = val; break;              // 群发 ZM 测量模式
+        case 0x43C0: jcy_sweep_count = (val > SWEEP_MAX) ? SWEEP_MAX : val; break;  // 扫频频点数 N
+    }
+}
+
+/* ── 扫频: 一个频点测完(成功或ADC错)后调用: 存结果→推进到下一点或收尾 ── */
+static void sweep_on_point_done(long long re, long long im, uint16_t vzm) {
+    if (!sweep_running) return;
+    uint16_t i = jcy_sweep_idx;
+    if (i < jcy_sweep_count && i < SWEEP_MAX) {
+        jcy_sweep_re[i]   = re;
+        jcy_sweep_im[i]   = im;
+        jcy_sweep_vzm[i]  = vzm;
+        jcy_sweep_fecho[i]= jcy_zm_freq_set;     // 本点实际所用频率码
+    }
+    jcy_sweep_idx = i + 1;                        // 已完成点数 +1 (上位机可据此边跑边读)
+    if (jcy_sweep_idx < jcy_sweep_count) {        // 还有点 → 载入下一频点并触发单点 ZM
+        jcy_zm_freq_set = jcy_sweep_freq[jcy_sweep_idx];
+        zm_start_req = 1;
+    } else {                                      // 全部完成
+        sweep_running   = 0;
+        jcy_sweep_state = 2;
     }
 }
 
@@ -564,6 +609,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
             uint16_t addr = (rx[2] << 8) | rx[3], val = (rx[4] << 8) | rx[5];
             uint8_t on = (val == 0xFF00);
             if      (addr == 0x0000 || addr == 0x0F00) zm_start_req  = on;
+            else if (addr == 0x00C0)                   sweep_start_req = on;  // 扫频 启/停
             else if (addr == 0x0040 || addr == 0x0F01) bal_start_req = on;
             else if (addr == 0x0080 || addr == 0x0F02) jcy_bal_mode  = on;
             else if (addr == 0x0010 && on)               flash_save_cal();   // 保存采样电阻校准到Flash
@@ -591,6 +637,7 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
                 uint8_t bit = (rx[7 + i / 8] >> (i % 8)) & 1;
                 uint16_t a = addr + i;
                 if      (a == 0x0000 || a == 0x0F00) zm_start_req  = bit;
+                else if (a == 0x00C0)                sweep_start_req = bit;  // 扫频 启/停
                 else if (a == 0x0040 || a == 0x0F01) bal_start_req = bit;
                 else if (a == 0x0080 || a == 0x0F02) jcy_bal_mode  = bit;
             }
@@ -653,6 +700,7 @@ int main(void)
     uint16_t dnb_bad_count = 0;     // DNB 连续无响应计数 (自愈触发)
     uint16_t zm_conv_target = 100;  // 本次 ZM 的转换时间门 (按频率 exp 自适应, ZM 启动时算)
     uint8_t  bal_running = 0;       // 均衡进行中
+    uint8_t  last_sweep_req = 0;    // 扫频线圈电平上次值 (边沿检测)
 #define DNB_BAD_LIMIT  3           // 连续3次(~1.5s)温压全0 = DNB掉枚举, 触发自动重枚举
 #define ZM_CONV_CYCLES  100       // ZM 转换时间门: 等够这么多轮询周期就读结果(原厂按 ConvTime, 不死等 BalZMDone). 100周期~6-8s, 安全超过原厂~4-5s转换时间
 
@@ -717,6 +765,19 @@ int main(void)
                 }
                 }   // end if(!zm_running) — ZM 进行中跳过 VM/温度读取
 
+                // ── 扫频控制 (coil 0x00C0): 上升沿=启动整段扫频, 下降沿=中止 ──
+                if (sweep_start_req && !last_sweep_req && !sweep_running && jcy_sweep_count > 0) {
+                    sweep_running   = 1;
+                    jcy_sweep_state = 1;            // 跑中
+                    jcy_sweep_idx   = 0;
+                    jcy_zm_freq_set = jcy_sweep_freq[0];
+                    zm_start_req    = 1;            // 触发第 0 点 (本 tick 立即处理)
+                } else if (!sweep_start_req && last_sweep_req && sweep_running) {
+                    sweep_running   = 0;
+                    jcy_sweep_state = 3;            // 中止
+                }
+                last_sweep_req = sweep_start_req;
+
                 // 阻抗测量 (ZM): FC05 线圈触发 → 启动 → 轮询 BalZMDone → 读 Zreal/Zimag/VZM
                 if (zm_start_req) {
                     zm_start_req = 0;
@@ -752,6 +813,7 @@ int main(void)
                             dnb_stop_zm();
                             zm_running = 0;
                             jcy_status = 0x0005;
+                            sweep_on_point_done(0, 0, jcy_zm_vzm);  // 扫频: 本点ADC错→记0, 继续下一点
                         } else {
                             dnb_delay_cycles(8000);
                             jcy_zm_re  = (uint16_t)((dnb_get_data(DNB_MEAS_ID, DNB_DATA_ZREAL) >> 4) & 0xFFFF);
@@ -782,6 +844,7 @@ int main(void)
                                     dnb_delay_cycles(8000);
                                     dnb_stop_zm();          // 关 EnZM, 恢复 VM
                                     zm_running = 0;
+                                    sweep_on_point_done(jcy_zm_re64, jcy_zm_im64, jcy_zm_vzm);  // 扫频: 存本点→下一点
                                 }
                             }
                         }
