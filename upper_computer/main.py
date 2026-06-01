@@ -659,9 +659,11 @@ def ecm_fit(hz, re, im, i_min):
         rms = float(np.sqrt(np.mean(np.abs((model(r.x, wf) - Zf) / np.abs(Zf)) ** 2)) * 100)
         wm = np.logspace(np.log10(wf.min()), np.log10(wf.max()), 240)
         Zm = model(r.x, wm)
+        # 模型曲线也减掉 jωL, 与蓝色"已补偿"实测弧同坐标 (否则高频被电感拉下去, 看着不一致)
+        my = (-Zm.imag + wm * L) * 1e6
         return dict(L=L, Rs=Rs, Rct=Rct, Q=Q, n=n, sig=sig, Cdl=Cdl, rms=rms,
                     fpk=1 / (2 * np.pi * Rct * Cdl),
-                    mx=(Zm.real * 1e6).tolist(), my=((-Zm.imag) * 1e6).tolist())
+                    mx=(Zm.real * 1e6).tolist(), my=my.tolist())
     except Exception:
         return None
 
