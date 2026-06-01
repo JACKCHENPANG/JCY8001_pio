@@ -619,6 +619,53 @@ def _solve3(A, b):
     return [M[i][3] / M[i][i] for i in range(3)]
 
 
+def ecm_fit(hz, re, im, i_min):
+    """等效电路自动拟合 Randles+CPE+Warburg: Z=jωL+Rs+[CPE‖(Rct+Zw)]。
+    在剔高频伪迹后的可信点上拟合。返回 dict 或 None(缺 scipy / 拟合失败)。
+    re/im 单位 μΩ, im=-Z''。同 tools/eis_ecm.py。
+    """
+    try:
+        import numpy as np
+        from scipy.optimize import least_squares
+    except Exception:
+        return None
+    try:
+        hz = np.asarray(hz, float); re = np.asarray(re, float); im = np.asarray(im, float)
+        w = 2 * np.pi * hz
+        Z = (re - 1j * im) * 1e-6                  # Ω
+        keep = np.arange(i_min, len(hz))
+        if len(keep) < 6:
+            return None
+        wf, Zf = w[keep], Z[keep]
+
+        def model(p, w):
+            L, Rs, Rct, Q, n, sig = p
+            jw = 1j * w
+            Zp = 1.0 / (Q * (jw) ** n + 1.0 / (Rct + sig * (jw) ** -0.5))
+            return 1j * w * L + Rs + Zp
+
+        def resid(p):
+            r = (model(p, wf) - Zf) / np.abs(Zf)
+            return np.concatenate([r.real, r.imag])
+
+        Rs0 = re[i_min] * 1e-6
+        Rct0 = max((re[-1] - re[i_min]) * 1e-6 * 0.8, 1e-5)
+        p0 = [2e-7, Rs0, Rct0, 10.0, 0.85, 5e-5]
+        lb = [1e-9, 1e-6, 1e-6, 1e-3, 0.3, 0.0]
+        ub = [1e-6, 5e-3, 5e-3, 1e5, 1.0, 1e-1]
+        r = least_squares(resid, p0, bounds=(lb, ub), max_nfev=20000)
+        L, Rs, Rct, Q, n, sig = r.x
+        Cdl = (Q * (1 / Rs + 1 / Rct) ** (n - 1)) ** (1 / n)
+        rms = float(np.sqrt(np.mean(np.abs((model(r.x, wf) - Zf) / np.abs(Zf)) ** 2)) * 100)
+        wm = np.logspace(np.log10(wf.min()), np.log10(wf.max()), 240)
+        Zm = model(r.x, wm)
+        return dict(L=L, Rs=Rs, Rct=Rct, Q=Q, n=n, sig=sig, Cdl=Cdl, rms=rms,
+                    fpk=1 / (2 * np.pi * Rct * Cdl),
+                    mx=(Zm.real * 1e6).tolist(), my=((-Zm.imag) * 1e6).tolist())
+    except Exception:
+        return None
+
+
 # ============================================================================
 #  自定义对数频率轴 (X 喂 log10(Hz), 标签显示真实 Hz)
 # ============================================================================
@@ -886,15 +933,23 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.lbl_fit)
         v.addLayout(top)
 
+        # 等效电路 (ECM) 全参数行
+        self.lbl_ecm = QtWidgets.QLabel("ECM: —")
+        self.lbl_ecm.setStyleSheet("color:#cf222e;")
+        v.addWidget(self.lbl_ecm)
+
         self.p_nyq = pg.PlotWidget()
         self.p_nyq.setBackground("w")
         self.p_nyq.showGrid(x=True, y=True, alpha=0.25)
         self.p_nyq.setLabel("bottom", "RE", units="μΩ")
         self.p_nyq.setLabel("left", "IM (-Z'')", units="μΩ")
         self.p_nyq.setAspectLocked(True)
-        # 拟合圆 (红虚线) — 放最底层
+        # ECM 模型曲线 (红实线) — 最底层
+        self.nyq_ecm = self.p_nyq.plot(
+            [], [], pen=pg.mkPen(COL_FIT, width=1.6))
+        # 拟合圆 (红虚线)
         self.nyq_fit = self.p_nyq.plot(
-            [], [], pen=pg.mkPen(COL_FIT, width=1.4, style=Qt.DashLine))
+            [], [], pen=pg.mkPen(COL_FIT, width=1.2, style=Qt.DashLine))
         # 主曲线 (可信弧)
         self.nyq_curve = self.p_nyq.plot(
             [], [], pen=pg.mkPen(COL_NYQ, width=2),
@@ -1208,13 +1263,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 rct = ("  Rct=%.0f μΩ" % a["Rct"]) if a["Rct"] is not None else ""
                 txt = "L=%.0f nH(%s)  Rs=%.0f μΩ%s" % (a["L_nH"], cvp, a["Rs"], rct)
             self.lbl_fit.setText(txt)
+            # ── 等效电路 (ECM) 自动拟合 + 模型叠加 ──
+            e = ecm_fit(self.s_hz, self.s_re, self.s_im, len(art)) if len(self.s_hz) >= 8 else None
+            if e is not None:
+                self.nyq_ecm.setData(e["mx"], e["my"])
+                self.lbl_ecm.setText(
+                    "ECM  L=%.0fnH  Rs=%.0fμΩ  Rct=%.0fμΩ  Cdl=%.2gF  CPE-n=%.2f  σ=%.2g  (RMS%.1f%%)"
+                    % (e["L"] * 1e9, e["Rs"] * 1e6, e["Rct"] * 1e6, e["Cdl"], e["n"], e["sig"], e["rms"]))
+            else:
+                self.nyq_ecm.setData([], [])
+                self.lbl_ecm.setText("ECM: —" + ("  (需 scipy)" if len(self.s_hz) >= 8 else ""))
         else:
             self.nyq_curve.setData(self.s_re, self.s_im)
             self.nyq_fit.setData([], [])
+            self.nyq_ecm.setData([], [])
             self.nyq_art.setData([], [])
             self.nyq_marks.setData([], [])
             if hasattr(self, "lbl_fit"):
                 self.lbl_fit.setText("Rs/Rct: —  (补偿关闭)" if not comp_on else "Rs/Rct: 点数不足")
+                self.lbl_ecm.setText("ECM: —")
         # Bode (x = log10 Hz)
         xs, zs, ph = [], [], []
         for hz, re, im in zip(self.s_hz, self.s_re, self.s_im):
