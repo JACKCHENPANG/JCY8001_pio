@@ -20,6 +20,7 @@ import sys, csv, math
 
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
 
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 opts = sys.argv[1:]
@@ -90,18 +91,39 @@ def zero_cross_Rs(ylist):
             return re[k] + f * (re[k + 1] - re[k]), hz[k] + f * (hz[k + 1] - hz[k])
     return min(re), float('nan')
 
-# ── 高频伪迹识别 + Rs ──────────────────────────────────────────────────────
-# 互感/引线耦合使实部 Z' 在高频自己翘起(-jωL 补不掉, 只动虚部)。
-# 实部最低点(Z'_min)= 实轴真截距 = Rs; 频率高于该点的(列表前段)= 高频伪迹, 标灰剔除。
+# ── 高频伪迹识别 + Rct 半圆拟合求 Rs/Rct ─────────────────────────────────────
+# 互感/引线耦合使实部 Z' 在高频自己翘起(-jωL 只动虚部, 补不掉实部翘起)→ 标灰剔除。
+# 剪掉伪迹后可信弧不过零(最低频点仍在 -Z''>0), 所以 Rs 不能直接读虚部过零,
+# 改为对 Rct 半圆做最小二乘圆拟合, 取左实轴截距=Rs, 右截距-Rs=Rct(压扁半圆也适用)。
 KEEP_HF = '--keep-hf' in opts
 i_min = min(range(len(re)), key=lambda k: re[k])
+Rct = None; circle = None; arc = []
 if DO_COMP and L_nH is not None and not KEEP_HF:
-    Rs, fz = re[i_min], hz[i_min]
-    artifact = list(range(0, i_min))          # 列表按 HF->LF, 比 Z'min 更高频的点
+    artifact = list(range(0, i_min))          # 列表按 HF->LF, 比 Z'min 更高频 = 伪迹
     if artifact:
-        print('高频伪迹点(实部翘起, 标灰剔除): ' +
-              ', '.join('%.0fHz' % hz[k] for k in artifact))
-    print('Rs = %.1f uOhm = %.4f mOhm @ %.2f Hz (实部最低点)' % (Rs, Rs / 1000, fz))
+        print('高频伪迹点(实部翘起, 标灰剔除): ' + ', '.join('%.0fHz' % hz[k] for k in artifact))
+    tr = list(range(i_min, len(re)))          # 可信点
+    cand = [k for k in tr if hz[k] >= 5] or tr
+    peak = max(cand, key=lambda k: im_c[k])   # Rct 弧峰(中频局部极大, 避开 Warburg 尖)
+    we = len(re) - 1
+    for k in range(peak, len(re) - 1):
+        if im_c[k + 1] > im_c[k]:              # 峰后第一个谷 = Warburg 起点
+            we = k; break
+    arc = list(range(i_min, we + 1))           # Rct 半圆 (不含 Warburg 上翘)
+    Rs, fz, Rct = re[i_min], hz[i_min], None    # 默认回退 = Z'min
+    if len(arc) >= 4:
+        x = np.array([re[k] for k in arc]); y = np.array([im_c[k] for k in arc])
+        A = np.c_[x, y, np.ones_like(x)]; b = -(x ** 2 + y ** 2)
+        D, E, F = np.linalg.lstsq(A, b, rcond=None)[0]
+        xc, yc = -D / 2, -E / 2; disc = D * D - 4 * F
+        if disc > 0:
+            r1 = (-D - disc ** 0.5) / 2; r2 = (-D + disc ** 0.5) / 2
+            Rs, Rsum = min(r1, r2), max(r1, r2); Rct = Rsum - Rs; fz = float('nan')
+            circle = (xc, yc, (xc ** 2 + yc ** 2 - F) ** 0.5)
+            print('Rct 半圆拟合: 圆心(%.0f,%.0f) → Rs=%.1f uOhm  Rct=%.1f uOhm  (Rs+Rct=%.1f)'
+                  % (xc, yc, Rs, Rct, Rsum))
+    print('Rs = %.1f uOhm = %.4f mOhm%s' % (Rs, Rs / 1000,
+          ('  Rct=%.0f uOhm (半圆外推到 Z\'\'=0)' % Rct) if Rct else '  (Z\'min 回退)'))
 else:
     Rs, fz = zero_cross_Rs(im_c if DO_COMP else im)
     artifact = []
@@ -121,15 +143,26 @@ if DO_COMP and L_nH is not None:
         axc.plot([re[k] for k in artifact], [im_c[k] for k in artifact], 'x', color='#8b949e',
                  ms=6, mew=1.4, label='HF artifact (trimmed)')
         axc.legend(loc='upper left', fontsize=8)
+    if circle is not None:                    # 画拟合的 Rct 半圆 + 两个实轴截距
+        xc, yc, R = circle
+        th = np.linspace(0, math.pi, 200)
+        cx, cy = xc + R * np.cos(th), yc + R * np.sin(th)
+        m = cy >= -1
+        axc.plot(cx[m], cy[m], '--', color='#cf222e', lw=1.0, alpha=0.7, label='Rct circle fit')
+        axc.plot([Rs + Rct], [0], 'rD', ms=6)
+        axc.annotate('Rs+Rct=%.0f' % (Rs + Rct), (Rs + Rct, 0), color='#cf222e', fontsize=8,
+                     textcoords='offset points', xytext=(2, -14))
+        axc.legend(loc='upper left', fontsize=8)
     axc.plot([Rs], [0], 'r*', ms=16)
     axc.axhline(0, color='#bbb', lw=0.6); axc.grid(True, alpha=0.3)
     axc.set_xlabel("Z' (uOhm)"); axc.set_ylabel("-Z'' (uOhm)")
-    axc.set_title('L-COMPENSATED  -jwL  ->  Rs(Z\'min) + Rct arc + Warburg')
-    axc.annotate('Rs=%.0fuO' % Rs, (Rs, 0), color='#cf222e', fontsize=9,
-                 textcoords='offset points', xytext=(-4, -14))
+    axc.set_title('L-COMPENSATED  ->  Rs/Rct by semicircle fit + Warburg')
+    axc.annotate('Rs=%.0f' % Rs, (Rs, 0), color='#cf222e', fontsize=9,
+                 textcoords='offset points', xytext=(-2, -14))
     hv = ('CV=%.1f%% %s' % (cv * 100, verdict_en) if cv is not None
           else (verdict_en if 'verdict_en' in dir() else 'ext short-cal'))
-    fig.suptitle('JCY8001 EIS   L=%.0f nH (%s)   Rs=%.3f mOhm @ %.1f Hz' % (L_nH, hv, Rs / 1000, fz),
+    rct_s = ('  Rct=%.0f uOhm' % Rct) if Rct else ''
+    fig.suptitle('JCY8001 EIS   L=%.0f nH (%s)   Rs=%.3f mOhm%s' % (L_nH, hv, Rs / 1000, rct_s),
                  fontsize=11)
 else:
     fig, ax = plt.subplots(figsize=(8.5, 6.2))
