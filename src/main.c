@@ -80,9 +80,9 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0217;   // v2.17 (固件自主EIS扫频)
+    jcy_fw_version = 0x0218;   // v2.18 (USART2 中断+环形缓冲, 修 Modbus 丢字节不回复)
     jcy_git_rev    = 0x0001;
-    jcy_build_date = 0x0531;   // 2026-05-31 (MMDD)
+    jcy_build_date = 0x0601;   // 2026-06-01 (MMDD)
     jcy_dnb_debug  = 0;
     jcy_dnb_volt_raw = 0;
     jcy_dnb_temp_raw = 0;
@@ -253,6 +253,39 @@ static void sweep_on_point_done(long long re, long long im, uint16_t vzm) {
 
 /* ── USART2 ─────────────────────────────────────────────────────────────── */
 
+/* RX ring buffer fed by USART2 RXNE interrupt.
+ * Why: at 8 MHz the bare-metal super-loop spends tens of ms inside one DNB
+ * measurement burst. The old code polled RXNE once per loop iteration, so any
+ * byte arriving during a DNB burst was lost (single DR, no FIFO) before the
+ * next poll → corrupt frame → CRC fail → silent drop → Modbus never replied.
+ * The ISR now captures every byte regardless of how slow the loop is; the loop
+ * just drains the ring and does Modbus 3.5-char idle-gap framing as before. */
+#define RXR_SZ 512u                       /* power of two */
+static volatile uint8_t  rxr_buf[RXR_SZ];
+static volatile uint16_t rxr_head = 0;    /* ISR writes */
+static volatile uint16_t rxr_tail = 0;    /* main loop reads */
+
+void USART2_IRQHandler(void) {
+    /* Reading SR then DR also clears ORE (overrun) so it can never wedge RX. */
+    uint32_t sr = USART2->SR;
+    if (sr & (USART_SR_RXNE | USART_SR_ORE)) {
+        uint8_t c = (uint8_t)USART2->DR;
+        uint16_t nh = (uint16_t)((rxr_head + 1u) & (RXR_SZ - 1u));
+        if (nh != rxr_tail) {             /* drop on overflow rather than clobber */
+            rxr_buf[rxr_head] = c;
+            rxr_head = nh;
+        }
+    }
+}
+
+/* Pop one byte from the ring. Returns 1 if a byte was available. */
+static int usart2_rx_pop(uint8_t *c) {
+    if (rxr_head == rxr_tail) return 0;
+    *c = rxr_buf[rxr_tail];
+    rxr_tail = (uint16_t)((rxr_tail + 1u) & (RXR_SZ - 1u));
+    return 1;
+}
+
 static void usart2_send(uint8_t c) {
     while (!(USART2->SR & USART_SR_TXE));
     USART2->DR = c;
@@ -263,7 +296,9 @@ static void usart2_init(void) {
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
     GPIOA->CRL = (GPIOA->CRL & 0xFFFF0000) | 0x00004B04;
     USART2->BRR = 0x0045;
-    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
+    NVIC_SetPriority(USART2_IRQn, 1);     /* must run while loop is busy in DNB */
+    NVIC_EnableIRQ(USART2_IRQn);
 }
 
 /* ── SPI1 (DNB1101) ─────────────────────────────────────────────────────── */
@@ -707,9 +742,12 @@ int main(void)
 #define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
 
     while (1) {
-        if (USART2->SR & USART_SR_RXNE) {
-            uint8_t c = USART2->DR;
-            if (frame_idx < sizeof(frame_buf)) frame_buf[frame_idx++] = c;
+        uint8_t c;
+        if (usart2_rx_pop(&c)) {
+            /* Drain everything the ISR has buffered so far in one go. */
+            do {
+                if (frame_idx < sizeof(frame_buf)) frame_buf[frame_idx++] = c;
+            } while (usart2_rx_pop(&c));
             idle_ticks = 0;
         } else {
             idle_ticks++;
