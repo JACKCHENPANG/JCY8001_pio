@@ -12,6 +12,7 @@ int main(void);
 void Reset_Handler_impl(void);
 void Default_Handler(void);
 void HardFault_Handler(void);
+void USART1_IRQHandler(void);   /* Modbus RX over J12/BLE (defined in main.c) */
 void USART2_IRQHandler(void);   /* Modbus RX (defined in main.c) */
 
 /*
@@ -48,7 +49,7 @@ void (* const g_pfnVectors[])(void) = {
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 24 TIM1 BRK/UP/TRG/CC              */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 28 TIM2, TIM3, TIM4, I2C1_EV       */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 32 I2C1_ER, I2C2_EV, I2C2_ER, SPI1 */
-    Default_Handler, Default_Handler, USART2_IRQHandler, Default_Handler, /* 36 SPI2, USART1, USART2(38), USART3 */
+    Default_Handler, USART1_IRQHandler, USART2_IRQHandler, Default_Handler, /* 36 SPI2, USART1(37), USART2(38), USART3 */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 40 EXTI15_10, RTCAlarm, USBWakeup, TIM8_BRK */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 44 TIM8 UP/TRG/CC, ADC3            */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 48 FSMC, SDIO, TIM5, SPI3          */

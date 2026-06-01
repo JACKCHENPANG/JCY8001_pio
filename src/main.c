@@ -80,9 +80,9 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0218;   // v2.18 (USART2 中断+环形缓冲, 修 Modbus 丢字节不回复)
+    jcy_fw_version = 0x0219;   // v2.19 (USART1/J12 也跑 Modbus, 接透传蓝牙模块)
     jcy_git_rev    = 0x0001;
-    jcy_build_date = 0x0601;   // 2026-06-01 (MMDD)
+    jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
     jcy_dnb_volt_raw = 0;
     jcy_dnb_temp_raw = 0;
@@ -299,6 +299,46 @@ static void usart2_init(void) {
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
     NVIC_SetPriority(USART2_IRQn, 1);     /* must run while loop is busy in DNB */
     NVIC_EnableIRQ(USART2_IRQn);
+}
+
+/* ── USART1 (J12 "UART" 接口, PA9=TX/PA10=RX) ───────────────────────────────
+ * 接透传蓝牙模块: 手机当 "Modbus over BLE" 客户端, 读固件算好的 RE/IM 等寄存器。
+ * 跟 USART2(CP2102)同一套 Modbus, 独立帧缓冲/中断, 回复按来源端口分流。
+ * 波特率默认 115200(@8MHz BRR=0x45), 蓝牙模块需配成 115200。 */
+static volatile uint8_t  rxr1_buf[RXR_SZ];
+static volatile uint16_t rxr1_head = 0;
+static volatile uint16_t rxr1_tail = 0;
+static volatile uint8_t  g_reply_port = 2;   /* 当前处理帧的来源: 1=USART1(BLE) 2=USART2(USB) */
+
+void USART1_IRQHandler(void) {
+    uint32_t sr = USART1->SR;
+    if (sr & (USART_SR_RXNE | USART_SR_ORE)) {
+        uint8_t c = (uint8_t)USART1->DR;
+        uint16_t nh = (uint16_t)((rxr1_head + 1u) & (RXR_SZ - 1u));
+        if (nh != rxr1_tail) { rxr1_buf[rxr1_head] = c; rxr1_head = nh; }
+    }
+}
+
+static int usart1_rx_pop(uint8_t *c) {
+    if (rxr1_head == rxr1_tail) return 0;
+    *c = rxr1_buf[rxr1_tail];
+    rxr1_tail = (uint16_t)((rxr1_tail + 1u) & (RXR_SZ - 1u));
+    return 1;
+}
+
+static void usart1_send(uint8_t c) {
+    while (!(USART1->SR & USART_SR_TXE));
+    USART1->DR = c;
+}
+
+static void usart1_init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+    /* PA9 = AF push-pull 50MHz (0xB), PA10 = floating input (0x4) */
+    GPIOA->CRH = (GPIOA->CRH & 0xFFFFF00F) | 0x000004B0;
+    USART1->BRR = 0x0045;                 /* 115200 @ PCLK2=8MHz */
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
+    NVIC_SetPriority(USART1_IRQn, 1);
+    NVIC_EnableIRQ(USART1_IRQn);
 }
 
 /* ── SPI1 (DNB1101) ─────────────────────────────────────────────────────── */
@@ -592,8 +632,9 @@ static uint8_t tx_buf[256];
 
 static void modbus_reply(const uint8_t *data, uint16_t len) {
     uint16_t crc = crc16(data, len);
-    for (uint16_t i = 0; i < len; i++) usart2_send(data[i]);
-    usart2_send(crc & 0xFF); usart2_send(crc >> 8);
+    void (*tx)(uint8_t) = (g_reply_port == 1) ? usart1_send : usart2_send;
+    for (uint16_t i = 0; i < len; i++) tx(data[i]);
+    tx(crc & 0xFF); tx(crc >> 8);
 }
 
 static void modbus_exception(uint8_t fc, uint8_t code) {
@@ -708,6 +749,7 @@ int main(void)
     init_registers();
     flash_load_cal();   // 从Flash加载采样电阻校准(若有), 覆盖默认10/5/1Ω
     usart2_init();
+    usart1_init();      // J12 透传蓝牙模块: Modbus over BLE (与 USART2 同协议)
     spi1_init();
     resis_gpio_init();   // 采样电阻量程选通 GPIO (PB5/PB3/PD2)
 
@@ -727,6 +769,9 @@ int main(void)
     uint8_t  frame_buf[256];
     uint16_t frame_idx = 0;
     uint32_t idle_ticks = 0;
+    uint8_t  frame_buf1[256];       // USART1/BLE 独立帧缓冲
+    uint16_t frame_idx1 = 0;
+    uint32_t idle_ticks1 = 0;
     uint32_t measure_ticks = 0;
     uint8_t  zm_running = 0;        // 阻抗测量进行中
     uint16_t zm_cycles  = 0;        // ZM 轮询周期计数 (超时保护)
@@ -743,6 +788,22 @@ int main(void)
 
     while (1) {
         uint8_t c;
+
+        /* USART1 (J12/蓝牙) Modbus 帧组装 — 与 USART2 独立, 同样空闲间隙断帧。 */
+        if (usart1_rx_pop(&c)) {
+            do {
+                if (frame_idx1 < sizeof(frame_buf1)) frame_buf1[frame_idx1++] = c;
+            } while (usart1_rx_pop(&c));
+            idle_ticks1 = 0;
+        } else {
+            idle_ticks1++;
+            if (frame_idx1 >= 8 && idle_ticks1 > 5000) {
+                g_reply_port = 1;
+                process_modbus(frame_buf1, frame_idx1);
+                frame_idx1 = 0;
+            }
+        }
+
         if (usart2_rx_pop(&c)) {
             /* Drain everything the ISR has buffered so far in one go. */
             do {
@@ -754,6 +815,7 @@ int main(void)
             measure_ticks++;
 
             if (frame_idx >= 8 && idle_ticks > 5000) {
+                g_reply_port = 2;
                 process_modbus(frame_buf, frame_idx);
                 frame_idx = 0;
             }
