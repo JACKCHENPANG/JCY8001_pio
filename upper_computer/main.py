@@ -688,13 +688,65 @@ class LogHzAxis(pg.AxisItem):
 
 
 # ============================================================================
+#  排针示意控件 (B0..BN 一排, 高亮当前测量的相邻两针, 标 +/-)
+# ============================================================================
+class PinoutWidget(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.n_series = 0          # 串数 N -> 针 B0..BN (N+1 针)
+        self.active = -1           # 当前电芯 k (1..N): 占用 B(k-1)+, B(k)-
+        self.setMinimumHeight(110)
+
+    def set_state(self, n_series, active):
+        self.n_series = n_series; self.active = active; self.update()
+
+    def paintEvent(self, ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.fillRect(self.rect(), QtGui.QColor("#ffffff"))
+        npin = self.n_series + 1
+        if npin < 2:
+            return
+        W = self.width(); H = self.height()
+        m = 28
+        step = (W - 2 * m) / max(npin - 1, 1)
+        cy = H // 2 + 4
+        r = min(14, int(step * 0.32))
+        plus = self.active            # B(k-1) = +  (index active-1)
+        minus = self.active           # B(k)   = -  (index active)
+        for i in range(npin):
+            cx = int(m + i * step)
+            hi_p = (i == self.active - 1)
+            hi_m = (i == self.active)
+            if hi_p:
+                col = QtGui.QColor("#cf222e")     # + 红
+            elif hi_m:
+                col = QtGui.QColor("#0071e3")     # - 蓝
+            else:
+                col = QtGui.QColor("#c8c8cc")
+            p.setBrush(col); p.setPen(QtGui.QPen(QtGui.QColor("#888"), 1))
+            p.drawEllipse(QtCore.QPoint(cx, cy), r, r)
+            p.setPen(QtGui.QColor("#333"))
+            p.drawText(QtCore.QRect(cx - 24, cy + r + 2, 48, 18),
+                       Qt.AlignHCenter, "B%d" % i)
+            if hi_p or hi_m:
+                p.setPen(QtGui.QColor("#fff"))
+                f = p.font(); f.setBold(True); f.setPointSize(12); p.setFont(f)
+                p.drawText(QtCore.QRect(cx - r, cy - r, 2 * r, 2 * r),
+                           Qt.AlignCenter, "+" if hi_p else "−")
+                f.setBold(False); p.setFont(f)
+        p.end()
+
+
+# ============================================================================
 #  主窗口
 # ============================================================================
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("JCY8001 · 电化学阻抗谱上位机")
+        self.setWindowTitle("JCY8001 · 电化学阻抗谱上位机  v1.0.0")
         self.resize(1280, 820)
+        self.con_active = False    # 不拆包一致性测试进行中
 
         self.mb = Modbus()
         self.sweep_worker = None
@@ -733,6 +785,7 @@ class MainWindow(QtWidgets.QMainWindow):
         body_l.addWidget(self.tabs)
         self.tabs.addTab(self._build_sweep_tab(), "自主扫频")
         self.tabs.addTab(self._build_single_tab(), "单点测量")
+        self.tabs.addTab(self._build_consistency_tab(), "不拆包测一致性")
 
         # 菜单: 工具 > 校准
         m = self.menuBar().addMenu("工具")
@@ -1301,10 +1354,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sweep_finished(self, state):
         self._sweep_cleanup()
+        if self.con_active:
+            self._con_on_measured(state)
+            return
         self.statusBar().showMessage("扫频完成" if state == 2 else "扫频已停止")
 
     def _on_sweep_failed(self, msg):
         self._sweep_cleanup()
+        if self.con_active:
+            self._con_measuring = False
+            self.con_confirm.setEnabled(True)
+            self._warn("第 %d 串测量出错, 请重测:\n%s" % (self.con_idx, msg))
+            return
         self._warn("扫频出错:\n%s" % msg)
 
     def _sweep_cleanup(self):
@@ -1319,6 +1380,173 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.cmb_speed, self.cmb_mode, self.spn_npts,
                     self.btn_connect):
             wdg.setEnabled(not lock)
+
+    # ============================================================ 不拆包测一致性
+    def _build_consistency_tab(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(10)
+
+        # 左: 设置 + 向导
+        left = QtWidgets.QVBoxLayout(); lay.addLayout(left, 0)
+
+        self.con_setup = QtWidgets.QGroupBox("测试设置")
+        f = QtWidgets.QFormLayout(self.con_setup)
+        self.con_series = QtWidgets.QSpinBox(); self.con_series.setRange(1, 600); self.con_series.setValue(4)
+        self.con_spec = QtWidgets.QLineEdit(); self.con_spec.setPlaceholderText("可选, 如 LFP 280Ah")
+        self.con_tol = QtWidgets.QDoubleSpinBox(); self.con_tol.setRange(1, 100); self.con_tol.setValue(15); self.con_tol.setSuffix(" %")
+        self.con_rms = QtWidgets.QDoubleSpinBox(); self.con_rms.setRange(0.5, 50); self.con_rms.setValue(5); self.con_rms.setSuffix(" %")
+        f.addRow("串数 N *", self.con_series)
+        f.addRow("电池规格", self.con_spec)
+        f.addRow("Rct 偏差范围", self.con_tol)
+        f.addRow("RMS 可用阈值", self.con_rms)
+        self.btn_con_start = QtWidgets.QPushButton("开始"); self.btn_con_start.setObjectName("primary")
+        self.btn_con_start.clicked.connect(self._con_start)
+        f.addRow(self.btn_con_start)
+        left.addWidget(self.con_setup)
+
+        gb_w = QtWidgets.QGroupBox("逐串测量向导")
+        wl = QtWidgets.QVBoxLayout(gb_w)
+        self.con_pinout = PinoutWidget()
+        wl.addWidget(self.con_pinout)
+        self.con_prompt = QtWidgets.QLabel("填好串数后点\"开始\"。")
+        self.con_prompt.setWordWrap(True); self.con_prompt.setStyleSheet("font-size:14px;")
+        wl.addWidget(self.con_prompt)
+        self.con_confirm = QtWidgets.QPushButton("确认已插好, 开始测量")
+        self.con_confirm.setObjectName("primary"); self.con_confirm.setEnabled(False)
+        self.con_confirm.clicked.connect(self._con_confirm)
+        wl.addWidget(self.con_confirm)
+        self.con_status = QtWidgets.QLabel(""); self.con_status.setStyleSheet("color:#0071e3;")
+        wl.addWidget(self.con_status)
+        self.btn_con_restart = QtWidgets.QPushButton("重新开始")
+        self.btn_con_restart.clicked.connect(self._con_start); self.btn_con_restart.setVisible(False)
+        wl.addWidget(self.btn_con_restart)
+        wl.addStretch(1)
+        left.addWidget(gb_w, 1)
+
+        # 右: 结果对比 (表 + 叠加 Nyquist)
+        right = QtWidgets.QSplitter(Qt.Vertical); lay.addWidget(right, 1)
+        self.con_table = QtWidgets.QTableWidget(0, 6)
+        self.con_table.setHorizontalHeaderLabels(["串", "Rs μΩ", "Rct μΩ", "Cdl F", "偏差%", "状态"])
+        self.con_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.con_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        right.addWidget(self.con_table)
+        self.con_plot = pg.PlotWidget(); self.con_plot.setBackground("w")
+        self.con_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.con_plot.setLabel("bottom", "串号"); self.con_plot.setLabel("left", "Rct (μΩ)")
+        right.addWidget(self.con_plot)
+        right.setSizes([360, 300])
+        return w
+
+    def _con_start(self):
+        self.con_n = self.con_series.value()
+        self.con_tol_v = self.con_tol.value()
+        self.con_rms_v = self.con_rms.value()
+        self.con_results = []           # 每串: dict(k, Rs, Rct, Cdl, L, rms, hz, re, im)
+        self.con_idx = 1
+        self._con_measuring = False
+        self.con_table.setRowCount(0)
+        self.con_plot.clear()
+        self.btn_con_restart.setVisible(False)
+        self.con_setup.setEnabled(False)
+        self._con_show_cell()
+
+    def _con_show_cell(self):
+        k = self.con_idx
+        self.con_pinout.set_state(self.con_n, k)
+        self.con_prompt.setText(
+            "第 <b>%d/%d</b> 串:把探针插入 <span style='color:#cf222e'>B%d (+)</span> 和 "
+            "<span style='color:#0071e3'>B%d (−)</span>,<b>注意正负</b>。插好后点下方按钮。"
+            % (k, self.con_n, k - 1, k))
+        self.con_confirm.setEnabled(True)
+        self.con_status.setText("")
+
+    def _con_confirm(self):
+        if not self.mb.is_open:
+            self._warn("请先连接设备"); return
+        if self._con_measuring:
+            return
+        self._con_measuring = True
+        self.con_active = True
+        self.con_confirm.setEnabled(False)
+        self.con_status.setText("第 %d 串 测量中…" % self.con_idx)
+        self.poll_timer.stop()
+        self.s_hz, self.s_re, self.s_im = [], [], []
+        codes = DEFAULT_CODES[:self.spn_npts.value()]
+        self.sweep_worker = SweepWorker(self.mb, self._build_params(), codes)
+        self.sweep_worker.point.connect(self._on_point)
+        self.sweep_worker.progress.connect(self._on_progress)
+        self.sweep_worker.status.connect(self.statusBar().showMessage)
+        self.sweep_worker.finished_.connect(self._on_sweep_finished)
+        self.sweep_worker.failed.connect(self._on_sweep_failed)
+        self.sweep_worker.start()
+
+    def _con_on_measured(self, state):
+        self.con_active = False
+        self._con_measuring = False
+        # 拟合 + RMS 判定
+        a = analyze_eis(self.s_hz, self.s_re, self.s_im)
+        e = ecm_fit(self.s_hz, self.s_re, self.s_im, len(a["artifact"])) if len(self.s_hz) >= 8 else None
+        if e is None:
+            self._warn("第 %d 串数据不可用 (拟合失败 / 缺 scipy / 点数不足),请重插探针重测。" % self.con_idx)
+            self.con_confirm.setEnabled(True); return
+        if e["rms"] > self.con_rms_v:
+            self._warn("第 %d 串数据不可用:RMS=%.1f%% > 阈值 %.1f%%。\n请重新插好探针(检查正负/接触)重测。"
+                       % (self.con_idx, e["rms"], self.con_rms_v))
+            self.con_confirm.setEnabled(True); return
+        self.con_results.append(dict(
+            k=self.con_idx, Rs=e["Rs"] * 1e6, Rct=e["Rct"] * 1e6, Cdl=e["Cdl"],
+            L=e["L"] * 1e9, rms=e["rms"],
+            hz=list(self.s_hz), re=list(self.s_re), im=list(self.s_im)))
+        self.con_status.setText("第 %d 串 OK (Rct=%.0fμΩ, RMS=%.1f%%)" % (self.con_idx, e["Rct"] * 1e6, e["rms"]))
+        self.con_idx += 1
+        if self.con_idx <= self.con_n:
+            self._con_show_cell()
+        else:
+            self._con_finish()
+
+    def _con_finish(self):
+        self.con_confirm.setEnabled(False)
+        self.con_pinout.set_state(0, -1)
+        self.con_setup.setEnabled(True)
+        self.btn_con_restart.setVisible(True)
+        rct = sorted(r["Rct"] for r in self.con_results)
+        med = rct[len(rct) // 2] if rct else 0
+        bad = []
+        self.con_table.setRowCount(len(self.con_results))
+        for row, r in enumerate(self.con_results):
+            dev = (r["Rct"] - med) / med * 100 if med else 0
+            ok = abs(dev) <= self.con_tol_v
+            if not ok:
+                bad.append((r["k"], dev))
+            cells = ["%d" % r["k"], "%.0f" % r["Rs"], "%.0f" % r["Rct"],
+                     "%.2g" % r["Cdl"], "%+.1f" % dev, "OK" if ok else "超差"]
+            for c, s in enumerate(cells):
+                it = QtWidgets.QTableWidgetItem(s); it.setTextAlignment(Qt.AlignCenter)
+                if not ok:
+                    it.setBackground(QtGui.QColor("#ffd7d5"))
+                self.con_table.setItem(row, c, it)
+        # Rct 柱状图 + 中位数线 + 容差带
+        self.con_plot.clear()
+        ks = [r["k"] for r in self.con_results]; rs = [r["Rct"] for r in self.con_results]
+        bar = pg.BarGraphItem(x=ks, height=rs, width=0.6,
+                              brushes=[pg.mkBrush("#ff3b30" if abs((v - med) / med * 100) > self.con_tol_v
+                                                  else "#0071e3") for v in rs])
+        self.con_plot.addItem(bar)
+        self.con_plot.addLine(y=med, pen=pg.mkPen("#34c759", width=2, style=Qt.DashLine))
+        self.con_plot.addLine(y=med * (1 + self.con_tol_v / 100), pen=pg.mkPen("#ff9500", style=Qt.DotLine))
+        self.con_plot.addLine(y=med * (1 - self.con_tol_v / 100), pen=pg.mkPen("#ff9500", style=Qt.DotLine))
+        # 汇总弹框
+        spec = self.con_spec.text().strip()
+        head = "整包 %d 串一致性%s\n中位 Rct=%.0f μΩ, 容差 ±%.0f%%\n\n" % (
+            self.con_n, ("(" + spec + ")" if spec else ""), med, self.con_tol_v)
+        if bad:
+            msg = head + "⚠ 超差串(需关注):\n" + "\n".join(
+                "  第 %d 串: Rct 偏离中位 %+.1f%%" % (k, d) for k, d in bad)
+            QtWidgets.QMessageBox.warning(self, "一致性结果", msg)
+        else:
+            QtWidgets.QMessageBox.information(self, "一致性结果", head + "✅ 全部在 ±%.0f%% 内, 一致性良好。" % self.con_tol_v)
+        self.statusBar().showMessage("一致性测试完成: %d 串, %d 串超差" % (self.con_n, len(bad)))
 
     # ---------------------------------------------------------------- 单点
     def start_single(self):
