@@ -1,0 +1,18 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/consistency/consistency"
+  ],
+  "window": {
+    "navigationBarTitleText": "JCY8001 阻抗谱",
+    "navigationBarBackgroundColor": "#0071e3",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#f2f2f7"
+  },
+  "permission": {
+    "scope.bluetooth": { "desc": "用于连接 JCY8001 蓝牙模块" }
+  },
+  "requiredPrivateInfos": ["getBluetoothDevices"],
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

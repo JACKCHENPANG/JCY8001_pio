@@ -1,0 +1,30 @@
+<view class="card">
+  <view class="row">
+    <view class="title">JCY8001 阻抗谱</view>
+    <button size="mini" class="{{connected ? '' : 'btn-primary'}}" bindtap="onConnect">
+      {{connected ? '断开' : '连接蓝牙'}}
+    </button>
+  </view>
+  <view class="row"><text class="lbl">状态</text><text class="val">{{status}}</text></view>
+  <view class="row"><text class="lbl">固件</text><text class="val">{{fw}}</text></view>
+  <view class="row"><text class="lbl">温度</text><text class="val">{{temp}}</text></view>
+  <view class="row"><text class="lbl">电压</text><text class="val">{{volt}}</text></view>
+</view>
+
+<view class="card">
+  <view class="row">
+    <view class="title">单点谱 (1Ω 全频)</view>
+    <button size="mini" class="btn-primary" bindtap="onSweep" disabled="{{busy || !connected}}">
+      {{busy ? prog : '开始扫频'}}
+    </button>
+  </view>
+  <canvas canvas-id="nyq" style="width:320px;height:240px;margin:0 auto;"></canvas>
+  <view class="row"><text class="lbl">电感 L</text><text class="val">{{lnh}}</text></view>
+  <view class="row"><text class="lbl">Rs (欧姆内阻)</text><text class="val">{{rs}}</text></view>
+  <view class="row"><text class="lbl">Rct (电荷转移)</text><text class="val">{{rct}}</text></view>
+  <view style="margin-top:10rpx;color:#cf222e;font-size:24rpx;">{{ecm}}</view>
+</view>
+
+<view class="card">
+  <button class="btn-primary" bindtap="goConsistency">不拆包测一致性 ›</button>
+</view>

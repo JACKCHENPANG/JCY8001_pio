@@ -1,0 +1,41 @@
+<!-- 设置 -->
+<view class="card" wx:if="{{stage==='setup'}}">
+  <view class="title">不拆包测一致性</view>
+  <view class="row"><text class="lbl">串数 N *</text>
+    <input type="number" value="{{n}}" bindinput="onN" style="text-align:right;width:120rpx;"/></view>
+  <view class="row"><text class="lbl">电池规格</text>
+    <input value="{{spec}}" placeholder="可选" bindinput="onSpec" style="text-align:right;width:240rpx;"/></view>
+  <view class="row"><text class="lbl">Rct 偏差范围 %</text>
+    <input type="digit" value="{{tol}}" bindinput="onTol" style="text-align:right;width:120rpx;"/></view>
+  <view class="row"><text class="lbl">RMS 可用阈值 %</text>
+    <input type="digit" value="{{rmsThr}}" bindinput="onRms" style="text-align:right;width:120rpx;"/></view>
+  <button class="btn-primary" style="margin-top:16rpx;" bindtap="onStart">开始</button>
+</view>
+
+<!-- 逐串向导 -->
+<view class="card" wx:if="{{stage==='measure'}}">
+  <view class="title">逐串测量 ({{idx}}/{{n}})</view>
+  <canvas canvas-id="pin" style="width:320px;height:90px;margin:0 auto;"></canvas>
+  <view style="font-size:28rpx;margin:16rpx 0;">{{prompt}}</view>
+  <button class="btn-primary" bindtap="onConfirm" disabled="{{busy}}">
+    {{busy ? prog : '确认已插好,开始测量'}}
+  </button>
+</view>
+
+<!-- 整包结果 -->
+<view class="card" wx:if="{{stage==='done'}}">
+  <view class="title">整包一致性 (中位 Rct {{median}} μΩ)</view>
+  <view class="{{badText[0]==='✅' ? 'ok' : 'bad'}}" style="font-size:26rpx;margin-bottom:12rpx;">{{badText}}</view>
+  <view class="row" style="border-bottom:1rpx solid #eee;">
+    <text class="lbl" style="width:60rpx;">串</text><text class="lbl" style="width:120rpx;">Rs</text>
+    <text class="lbl" style="width:120rpx;">Rct</text><text class="lbl" style="width:120rpx;">偏差%</text>
+    <text class="lbl" style="width:90rpx;">状态</text>
+  </view>
+  <view class="row" wx:for="{{rows}}" wx:key="k" style="{{item.bad ? 'background:#ffeceb;' : ''}}">
+    <text style="width:60rpx;">{{item.k}}</text><text style="width:120rpx;">{{item.rs}}</text>
+    <text style="width:120rpx;">{{item.rct}}</text><text style="width:120rpx;">{{item.dev}}</text>
+    <text style="width:90rpx;" class="{{item.bad ? 'bad' : 'ok'}}">{{item.bad ? '超差' : 'OK'}}</text>
+  </view>
+  <button class="btn-primary" style="margin-top:16rpx;" bindtap="copyReport">复制报告</button>
+  <button size="mini" style="margin-top:12rpx;" bindtap="restart">重新开始</button>
+</view>

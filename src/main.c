@@ -80,7 +80,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0219;   // v2.19 (USART1/J12 也跑 Modbus, 接透传蓝牙模块)
+    jcy_fw_version = 0x0220;   // v2.20 (USART1/J12 = 9600, 匹配 JDY-10 透传蓝牙, 免配)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -335,7 +335,7 @@ static void usart1_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
     /* PA9 = AF push-pull 50MHz (0xB), PA10 = floating input (0x4) */
     GPIOA->CRH = (GPIOA->CRH & 0xFFFFF00F) | 0x000004B0;
-    USART1->BRR = 0x0045;                 /* 115200 @ PCLK2=8MHz */
+    USART1->BRR = 0x0341;                 /* 9600 @ PCLK2=8MHz (匹配 JDY-10 默认 UART 波特率, 模块免配) */
     USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
     NVIC_SetPriority(USART1_IRQn, 1);
     NVIC_EnableIRQ(USART1_IRQn);

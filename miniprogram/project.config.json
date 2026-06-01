@@ -1,0 +1,14 @@
+{
+  "description": "JCY8001 电化学阻抗谱小程序 (Modbus over BLE / JDY-10)",
+  "miniprogramRoot": "./",
+  "appid": "touristappid",
+  "projectname": "JCY8001-EIS",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "minified": true,
+    "postcss": true
+  },
+  "compileType": "miniprogram",
+  "libVersion": "latest"
+}
