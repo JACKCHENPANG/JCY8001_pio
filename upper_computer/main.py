@@ -531,6 +531,92 @@ def set_dot(lab, color):
 COL_NYQ   = "#0071e3"
 COL_BODE  = "#0071e3"
 COL_PHASE = "#ff9500"
+COL_ART   = "#8e8e93"   # 高频伪迹 (灰)
+COL_FIT   = "#ff3b30"   # Rct 拟合圆 (红)
+COL_RCT   = "#7d4cdb"   # Rct 跨距 (紫)
+
+
+def analyze_eis(hz, re, im, hfmin=300.0, do_comp=True):
+    """EIS 后处理: 拟合夹具串联电感 L → 减 jωL → 剔高频互感伪迹 → Rct 半圆拟合求 Rs/Rct。
+
+    与 tools/eis_nyquist.py 同一套算法。入参 re/im 单位 μΩ, im 已是 -Z''。
+    返回 dict: L_nH, cv, im_c(补偿后), artifact(伪迹下标), trusted(可信下标),
+               Rs, Rct, circle=(xc,yc,R) 或 None。点不够时相应字段为 None。
+    """
+    import math as _m
+    n = len(hz)
+    out = dict(L_nH=None, cv=None, im_c=list(im), artifact=[],
+               trusted=list(range(n)), Rs=None, Rct=None, circle=None)
+    if n < 4 or not do_comp:
+        return out
+    # 1) 高频拟合 L: Z''=-im≈wL → 最小二乘过原点
+    hf = [(h, -i) for h, i in zip(hz, im) if h >= hfmin]
+    if len(hf) < 2:
+        return out
+    num = sum((zpp * 1e-6) * (2 * _m.pi * f) for f, zpp in hf)
+    den = sum((2 * _m.pi * f) ** 2 for f, _ in hf)
+    L = num / den
+    Li = [(zpp * 1e-6) / (2 * _m.pi * f) for f, zpp in hf]
+    mean = sum(Li) / len(Li)
+    sd = (sum((x - mean) ** 2 for x in Li) / len(Li)) ** 0.5
+    out["L_nH"] = L * 1e9
+    out["cv"] = sd / mean if mean else 0.0
+    # 2) 减 jωL
+    im_c = [i + (2 * _m.pi * h) * L * 1e6 for h, i in zip(hz, im)]
+    out["im_c"] = im_c
+    # 3) 剔高频伪迹: 实部 Z'min 以上(更高频)的点 (列表按 HF->LF)
+    i_min = min(range(n), key=lambda k: re[k])
+    out["artifact"] = list(range(0, i_min))
+    out["trusted"] = list(range(i_min, n))
+    out["Rs"] = re[i_min]                      # 默认回退 = Z'min
+    # 4) Rct 半圆拟合 (i_min..峰后第一个谷, 避开 Warburg)
+    tr = out["trusted"]
+    cand = [k for k in tr if hz[k] >= 5] or tr
+    peak = max(cand, key=lambda k: im_c[k])
+    we = n - 1
+    for k in range(peak, n - 1):
+        if im_c[k + 1] > im_c[k]:
+            we = k; break
+    arc = list(range(i_min, we + 1))
+    if len(arc) >= 4:
+        x = [re[k] for k in arc]; y = [im_c[k] for k in arc]
+        # Kasa 圆拟合 (纯 python 解 3x3 正规方程)
+        sx = sum(x); sy = sum(y); sxx = sum(a * a for a in x); syy = sum(b * b for b in y)
+        sxy = sum(a * b for a, b in zip(x, y)); m = len(x)
+        sxz = sum(a * (a * a + b * b) for a, b in zip(x, y))
+        syz = sum(b * (a * a + b * b) for a, b in zip(x, y))
+        sz = sum(a * a + b * b for a, b in zip(x, y))
+        # 解 [[sxx sxy sx],[sxy syy sy],[sx sy m]]·[D E F]=-[sxz syz sz]
+        A = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, m]]
+        rhs = [-sxz, -syz, -sz]
+        sol = _solve3(A, rhs)
+        if sol:
+            D, E, F = sol; disc = D * D - 4 * F
+            if disc > 0:
+                r1 = (-D - disc ** 0.5) / 2; r2 = (-D + disc ** 0.5) / 2
+                Rs, Rsum = min(r1, r2), max(r1, r2)
+                out["Rs"] = Rs; out["Rct"] = Rsum - Rs
+                xc, yc = -D / 2, -E / 2
+                out["circle"] = (xc, yc, (xc * xc + yc * yc - F) ** 0.5)
+    return out
+
+
+def _solve3(A, b):
+    """高斯消元解 3x3, 失败返回 None。"""
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for c in range(3):
+        p = max(range(c, 3), key=lambda r: abs(M[r][c]))
+        if abs(M[p][c]) < 1e-12:
+            return None
+        M[c], M[p] = M[p], M[c]
+        piv = M[c][c]
+        for r in range(3):
+            if r == c:
+                continue
+            f = M[r][c] / piv
+            for k in range(c, 4):
+                M[r][k] -= f * M[c][k]
+    return [M[i][3] / M[i][i] for i in range(3)]
 
 
 # ============================================================================
@@ -787,16 +873,41 @@ class MainWindow(QtWidgets.QMainWindow):
         gb = QtWidgets.QGroupBox("Nyquist")
         v = QtWidgets.QVBoxLayout(gb)
         v.setContentsMargins(8, 8, 8, 8)
+
+        # 顶部: 电感补偿开关 + 结果
+        top = QtWidgets.QHBoxLayout()
+        self.chk_comp = QtWidgets.QCheckBox("电感补偿 + 拟合 Rs/Rct")
+        self.chk_comp.setChecked(True)
+        self.chk_comp.stateChanged.connect(self._redraw)
+        self.lbl_fit = QtWidgets.QLabel("Rs/Rct: —")
+        self.lbl_fit.setStyleSheet("font-weight:600;")
+        top.addWidget(self.chk_comp)
+        top.addStretch(1)
+        top.addWidget(self.lbl_fit)
+        v.addLayout(top)
+
         self.p_nyq = pg.PlotWidget()
         self.p_nyq.setBackground("w")
         self.p_nyq.showGrid(x=True, y=True, alpha=0.25)
         self.p_nyq.setLabel("bottom", "RE", units="μΩ")
         self.p_nyq.setLabel("left", "IM (-Z'')", units="μΩ")
         self.p_nyq.setAspectLocked(True)
+        # 拟合圆 (红虚线) — 放最底层
+        self.nyq_fit = self.p_nyq.plot(
+            [], [], pen=pg.mkPen(COL_FIT, width=1.4, style=Qt.DashLine))
+        # 主曲线 (可信弧)
         self.nyq_curve = self.p_nyq.plot(
             [], [], pen=pg.mkPen(COL_NYQ, width=2),
             symbol="o", symbolSize=8,
             symbolBrush=COL_NYQ, symbolPen=pg.mkPen("w", width=1.2))
+        # 高频伪迹 (灰 x)
+        self.nyq_art = pg.ScatterPlotItem(
+            size=10, symbol="x", pen=pg.mkPen(COL_ART, width=1.6), brush=None)
+        self.p_nyq.addItem(self.nyq_art)
+        # Rs / Rs+Rct 标记 (红)
+        self.nyq_marks = pg.ScatterPlotItem(
+            size=13, symbol="star", brush=pg.mkBrush(COL_FIT), pen=pg.mkPen("w", width=1))
+        self.p_nyq.addItem(self.nyq_marks)
         v.addWidget(self.p_nyq)
         return gb
 
@@ -1067,8 +1178,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self._redraw()
 
     def _redraw(self):
-        # Nyquist
-        self.nyq_curve.setData(self.s_re, self.s_im)
+        # ── Nyquist + 电感补偿/拟合 ──
+        comp_on = self.chk_comp.isChecked() if hasattr(self, "chk_comp") else False
+        if comp_on and len(self.s_hz) >= 4:
+            a = analyze_eis(self.s_hz, self.s_re, self.s_im)
+            im_c = a["im_c"]; tr = a["trusted"]; art = a["artifact"]
+            self.nyq_curve.setData([self.s_re[k] for k in tr], [im_c[k] for k in tr])
+            self.nyq_art.setData([self.s_re[k] for k in art], [im_c[k] for k in art])
+            marks = []
+            if a["circle"] is not None:
+                import math as _m
+                xc, yc, R = a["circle"]
+                xs_c, ys_c = [], []
+                for j in range(201):
+                    th = _m.pi * j / 200.0
+                    yy = yc + R * _m.sin(th)
+                    if yy >= -1:
+                        xs_c.append(xc + R * _m.cos(th)); ys_c.append(yy)
+                self.nyq_fit.setData(xs_c, ys_c)
+                marks = [(a["Rs"], 0.0), (a["Rs"] + a["Rct"], 0.0)]
+            else:
+                self.nyq_fit.setData([], [])
+                if a["Rs"] is not None:
+                    marks = [(a["Rs"], 0.0)]
+            self.nyq_marks.setData([p[0] for p in marks], [p[1] for p in marks])
+            txt = "Rs/Rct: —"
+            if a["L_nH"] is not None:
+                cvp = ("CV%.0f%%" % (a["cv"] * 100)) if a["cv"] is not None else ""
+                rct = ("  Rct=%.0f μΩ" % a["Rct"]) if a["Rct"] is not None else ""
+                txt = "L=%.0f nH(%s)  Rs=%.0f μΩ%s" % (a["L_nH"], cvp, a["Rs"], rct)
+            self.lbl_fit.setText(txt)
+        else:
+            self.nyq_curve.setData(self.s_re, self.s_im)
+            self.nyq_fit.setData([], [])
+            self.nyq_art.setData([], [])
+            self.nyq_marks.setData([], [])
+            if hasattr(self, "lbl_fit"):
+                self.lbl_fit.setText("Rs/Rct: —  (补偿关闭)" if not comp_on else "Rs/Rct: 点数不足")
         # Bode (x = log10 Hz)
         xs, zs, ph = [], [], []
         for hz, re, im in zip(self.s_hz, self.s_re, self.s_im):
