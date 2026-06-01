@@ -1421,6 +1421,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_con_restart = QtWidgets.QPushButton("重新开始")
         self.btn_con_restart.clicked.connect(self._con_start); self.btn_con_restart.setVisible(False)
         wl.addWidget(self.btn_con_restart)
+        self.btn_con_export = QtWidgets.QPushButton("导出报告 CSV")
+        self.btn_con_export.clicked.connect(self._con_export); self.btn_con_export.setVisible(False)
+        wl.addWidget(self.btn_con_export)
         wl.addStretch(1)
         left.addWidget(gb_w, 1)
 
@@ -1510,8 +1513,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.con_pinout.set_state(0, -1)
         self.con_setup.setEnabled(True)
         self.btn_con_restart.setVisible(True)
+        self.btn_con_export.setVisible(True)
         rct = sorted(r["Rct"] for r in self.con_results)
         med = rct[len(rct) // 2] if rct else 0
+        self.con_med = med
         bad = []
         self.con_table.setRowCount(len(self.con_results))
         for row, r in enumerate(self.con_results):
@@ -1547,6 +1552,41 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             QtWidgets.QMessageBox.information(self, "一致性结果", head + "✅ 全部在 ±%.0f%% 内, 一致性良好。" % self.con_tol_v)
         self.statusBar().showMessage("一致性测试完成: %d 串, %d 串超差" % (self.con_n, len(bad)))
+
+    def _con_export(self):
+        if not getattr(self, "con_results", None):
+            self._warn("无数据可导出"); return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出一致性报告", "JCY8001_pack_consistency.csv", "CSV (*.csv)")
+        if not path:
+            return
+        med = getattr(self, "con_med", 0)
+        spec = self.con_spec.text().strip()
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fp:
+                wr = csv.writer(fp)
+                wr.writerow(["# JCY8001 不拆包一致性报告"])
+                wr.writerow(["# 时间", time.strftime("%Y-%m-%d %H:%M:%S")])
+                wr.writerow(["# 电池规格", spec or "-"])
+                wr.writerow(["# 串数", self.con_n])
+                wr.writerow(["# Rct偏差范围(%)", self.con_tol_v])
+                wr.writerow(["# RMS可用阈值(%)", self.con_rms_v])
+                wr.writerow(["# Rct中位数(uOhm)", "%.1f" % med])
+                nbad = sum(1 for r in self.con_results
+                           if med and abs((r["Rct"] - med) / med * 100) > self.con_tol_v)
+                wr.writerow(["# 超差串数", nbad])
+                wr.writerow([])
+                wr.writerow(["串号", "Rs_uOhm", "Rct_uOhm", "Cdl_F", "L_nH", "RMS_%",
+                             "Rct偏差_%", "状态"])
+                for r in self.con_results:
+                    dev = (r["Rct"] - med) / med * 100 if med else 0
+                    st = "OK" if abs(dev) <= self.con_tol_v else "超差"
+                    wr.writerow([r["k"], "%.1f" % r["Rs"], "%.1f" % r["Rct"],
+                                 "%.3g" % r["Cdl"], "%.0f" % r["L"], "%.2f" % r["rms"],
+                                 "%+.1f" % dev, st])
+            self.statusBar().showMessage("报告已导出: %s" % path)
+        except Exception as e:
+            self._warn("导出失败:\n%s" % e)
 
     # ---------------------------------------------------------------- 单点
     def start_single(self):
