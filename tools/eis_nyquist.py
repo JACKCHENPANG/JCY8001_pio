@@ -90,8 +90,22 @@ def zero_cross_Rs(ylist):
             return re[k] + f * (re[k + 1] - re[k]), hz[k] + f * (hz[k + 1] - hz[k])
     return min(re), float('nan')
 
-Rs, fz = zero_cross_Rs(im_c if DO_COMP else im)
-print('Rs = %.1f uOhm = %.4f mOhm @ %.2f Hz' % (Rs, Rs / 1000, fz))
+# ── 高频伪迹识别 + Rs ──────────────────────────────────────────────────────
+# 互感/引线耦合使实部 Z' 在高频自己翘起(-jωL 补不掉, 只动虚部)。
+# 实部最低点(Z'_min)= 实轴真截距 = Rs; 频率高于该点的(列表前段)= 高频伪迹, 标灰剔除。
+KEEP_HF = '--keep-hf' in opts
+i_min = min(range(len(re)), key=lambda k: re[k])
+if DO_COMP and L_nH is not None and not KEEP_HF:
+    Rs, fz = re[i_min], hz[i_min]
+    artifact = list(range(0, i_min))          # 列表按 HF->LF, 比 Z'min 更高频的点
+    if artifact:
+        print('高频伪迹点(实部翘起, 标灰剔除): ' +
+              ', '.join('%.0fHz' % hz[k] for k in artifact))
+    print('Rs = %.1f uOhm = %.4f mOhm @ %.2f Hz (实部最低点)' % (Rs, Rs / 1000, fz))
+else:
+    Rs, fz = zero_cross_Rs(im_c if DO_COMP else im)
+    artifact = []
+    print('Rs = %.1f uOhm = %.4f mOhm @ %.2f Hz' % (Rs, Rs / 1000, fz))
 
 # ── 画图 ──────────────────────────────────────────────────────────────────
 if DO_COMP and L_nH is not None:
@@ -100,11 +114,17 @@ if DO_COMP and L_nH is not None:
     axr.axhline(0, color='#bbb', lw=0.6); axr.grid(True, alpha=0.3)
     axr.set_xlabel("Z' (uOhm)"); axr.set_ylabel("-Z'' (uOhm)")
     axr.set_title('RAW  (HF tail = L=%.0f nH fixture)' % L_nH)
-    axc.plot(re, im_c, 'o-', color='#1f6feb', ms=4, lw=1.4)
+    tk = [k for k in range(len(re)) if k not in artifact]   # 可信(弧)点
+    axc.plot([re[k] for k in tk], [im_c[k] for k in tk], 'o-', color='#1f6feb', ms=4, lw=1.4,
+             label='cell (trusted)')
+    if artifact:
+        axc.plot([re[k] for k in artifact], [im_c[k] for k in artifact], 'x', color='#8b949e',
+                 ms=6, mew=1.4, label='HF artifact (trimmed)')
+        axc.legend(loc='upper left', fontsize=8)
     axc.plot([Rs], [0], 'r*', ms=16)
     axc.axhline(0, color='#bbb', lw=0.6); axc.grid(True, alpha=0.3)
     axc.set_xlabel("Z' (uOhm)"); axc.set_ylabel("-Z'' (uOhm)")
-    axc.set_title('L-COMPENSATED  -jwL  ->  Rs + Rct arc + Warburg')
+    axc.set_title('L-COMPENSATED  -jwL  ->  Rs(Z\'min) + Rct arc + Warburg')
     axc.annotate('Rs=%.0fuO' % Rs, (Rs, 0), color='#cf222e', fontsize=9,
                  textcoords='offset points', xytext=(-4, -14))
     hv = ('CV=%.1f%% %s' % (cv * 100, verdict_en) if cv is not None
