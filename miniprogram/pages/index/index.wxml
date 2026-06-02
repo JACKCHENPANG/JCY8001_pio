@@ -13,10 +13,14 @@
 
 <view class="card">
   <view class="row">
-    <view class="title">单点谱 (1Ω 全频)</view>
+    <view class="title">单点谱 (自动挡)</view>
     <button size="mini" class="btn-primary" bindtap="onSweep" disabled="{{busy || !connected}}">
       {{busy ? prog : '开始扫频'}}
     </button>
+  </view>
+  <view class="row">
+    <text class="lbl">全扫(到0.12Hz/慢) · 快扫(到1Hz/快)</text>
+    <switch checked="{{fullScan}}" bindchange="onScanMode"/>
   </view>
   <canvas canvas-id="nyq" style="width:320px;height:240px;margin:0 auto;"></canvas>
   <view class="row"><text class="lbl">电感 L</text><text class="val">{{lnh}}</text></view>

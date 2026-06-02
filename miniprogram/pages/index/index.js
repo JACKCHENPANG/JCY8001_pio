@@ -7,8 +7,10 @@ Page({
     status: '未连接', connected: false, busy: false,
     fw: '-', temp: '-', volt: '-',
     prog: '', rs: '-', rct: '-', lnh: '-',
-    ecm: '', pts: [],
+    ecm: '', pts: [], fullScan: false,   // false=快扫(14点~56s) true=全扫(25点~136s)
   },
+
+  onScanMode(e) { this.setData({ fullScan: e.detail.value }); },
 
   onConnect() {
     const app = getApp();
@@ -43,13 +45,13 @@ Page({
     const re = [], im = [], hz = [];
     try {
       const r = await dev.runSweep(app.globalData.ble, {
-        auto: true, fast: 1, avg: 1,
+        auto: true, fast: 1, avg: 1, mode: this.data.fullScan ? 'full' : 'fast',
         onAutoRange: (ar) => this.setData({
           prog: '自动档 ' + ar.R + 'Ω' + (ar.current_A ? ' (I≈' + ar.current_A.toFixed(2) + 'A)' : '') + (ar.note ? ' ⚠' : ''),
         }),
         onPoint: (i, f, x, y) => {
           hz.push(f); re.push(x); im.push(y);
-          this.setData({ prog: (i + 1) + '/20' });
+          this.setData({ prog: '测点 ' + (i + 1) });
         },
       });
       const a = A.analyze(r.hz, r.re, r.im);

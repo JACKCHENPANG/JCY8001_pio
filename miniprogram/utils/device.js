@@ -2,13 +2,23 @@
 'use strict';
 const MB = require('./modbus.js');
 
-// 固件频率表有效点 (freqval=Exp<<8|Mant, Hz), 1kHz->0.119Hz, 与 PC 工具同
-const PTS = [
+// 频点表 (freqval=Exp<<8|Mant, Hz). 高频含 5-7kHz(高内阻电芯才能扫到实轴过零+感性尾)。
+// FULL: 25点 7kHz->0.12Hz (研究/完整含 Warburg), ~136s。
+// FAST: 14点 7kHz->1Hz (分选/一致性, Rs/Rct 与 FULL 差<0.5%, 砍掉慢的<1Hz尾), ~56s。
+//   低内阻电芯也用 FAST 即可(频点本就够, 不需那么多)。
+const FULL_PTS = [
+  [0x0CE6, 7019.1], [0x0D52, 5004.9], [0x0C62, 2990.7], [0x0C42, 2014.2], [0x0C2E, 1403.8],
   [0x0B42, 1007.083], [0x09A2, 617.983], [0x08C6, 377.656], [0x087A, 232.697], [0x0796, 143.052],
   [0x082E, 87.738], [0x073A, 55.313], [0x0812, 34.332], [0x0716, 20.981], [0x070E, 13.351],
   [0x0806, 11.444], [0x070A, 9.537], [0x0902, 7.629], [0x0706, 5.722], [0x0802, 3.815],
   [0x0702, 1.907], [0x0602, 0.954], [0x0502, 0.477], [0x0402, 0.238], [0x0302, 0.119],
 ];
+const FAST_PTS = [
+  [0x0CE6, 7019.1], [0x0D52, 5004.9], [0x0C62, 2990.7], [0x0C2E, 1403.8], [0x0B42, 1007.083],
+  [0x09A2, 617.983], [0x08C6, 377.656], [0x087A, 232.697], [0x0796, 143.052], [0x082E, 87.738],
+  [0x073A, 55.313], [0x0716, 20.981], [0x0706, 5.722], [0x0602, 0.954],
+];
+const PTS = FULL_PTS;   // 向后兼容
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -87,7 +97,8 @@ async function autoRange(ble, opts) {
 // npts: 点数(<=20); onPoint(idx,hz,re,im); 返回 {hz:[],re:[],im:[]}
 async function runSweep(ble, opts) {
   opts = opts || {};
-  const npts = Math.min(opts.npts || PTS.length, PTS.length);
+  const TBL = (opts.mode === 'fast') ? FAST_PTS : FULL_PTS;   // 快扫/全扫
+  const npts = Math.min(opts.npts || TBL.length, TBL.length);
   // 自动挡: 优先用固件底层自动挡(0x4380=1, 扫频前固件自己探中低频点定档, 省 BLE 来回);
   // 固件不支持(老版本)则回退主机端探测。
   if (opts.auto && !opts.hostAuto) {
@@ -101,7 +112,7 @@ async function runSweep(ble, opts) {
   }
   await setParams(ble, opts);
   // 下发频点表 (FC10 到 0x4400) + 点数
-  const codes = PTS.slice(0, npts).map(p => p[0]);
+  const codes = TBL.slice(0, npts).map(p => p[0]);
   // 分批写 (FC10 一次最多 ~60 寄存器, 这里 <=20 直接一次)
   await ble.writeMulti(MB.REG.SWEEP_TABLE, codes);
   await ble.writeReg(MB.REG.SWEEP_COUNT, npts);
@@ -127,8 +138,8 @@ async function runSweep(ble, opts) {
       const ri = await ble.readHolding(MB.REG.SWEEP_IM + got * 4, 4);
       const reU = rr.ok ? MB.regs64ToUOhm(rr.regs) : 0;
       const imU = ri.ok ? MB.regs64ToUOhm(ri.regs) : 0;
-      hz.push(PTS[got][1]); re.push(reU); im.push(imU);
-      if (opts.onPoint) opts.onPoint(got, PTS[got][1], reU, imU);
+      hz.push(TBL[got][1]); re.push(reU); im.push(imU);
+      if (opts.onPoint) opts.onPoint(got, TBL[got][1], reU, imU);
       got++;
     }
     if (Date.now() - t0 > 180000) break;     // 3min 超时保护
@@ -146,4 +157,4 @@ async function runSweep(ble, opts) {
   return { hz, re, im, gear };
 }
 
-module.exports = { PTS, readBasic, setParams, runSweep, singleZM, autoRange, sleep };
+module.exports = { PTS, FULL_PTS, FAST_PTS, readBasic, setParams, runSweep, singleZM, autoRange, sleep };

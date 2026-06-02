@@ -58,11 +58,11 @@ Page({
     try {
       // 第一颗: 固件自动探并锁档; 后面颗: 复用锁定的档, 不再探(同包同型号, 零浪费)
       const sweepOpts = firstCell
-        ? { auto: true, fast: 1, avg: 1,
+        ? { auto: true, fast: 1, avg: 1, mode: 'fast',     // 分选用快扫(到1Hz, Rs/Rct 同全扫)
             onAutoRange: (ar) => { this.lockedGear = { sel: ar.sel, R: ar.R };
               this.setData({ prog: '锁档 ' + ar.R + 'Ω' }); } }
-        : { auto: false, samp: this.lockedGear.sel, fast: 1, avg: 1 };
-      sweepOpts.onPoint = (i) => this.setData({ prog: (i + 1) + '/20' });
+        : { auto: false, samp: this.lockedGear.sel, fast: 1, avg: 1, mode: 'fast' };
+      sweepOpts.onPoint = (i) => this.setData({ prog: '测点 ' + (i + 1) });
       const r = await dev.runSweep(ble, sweepOpts);
       const a = A.analyze(r.hz, r.re, r.im);
       const e = A.ecmFit(r.hz, r.re, r.im);
