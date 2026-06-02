@@ -18,6 +18,7 @@ Page({
   onStart() {
     if (!getApp().globalData.ble) { wx.showToast({ title: '请先在首页连接', icon: 'none' }); return; }
     this.results = [];
+    this.lockedGear = null;            // 批量锁档: 第一颗自动探, 后面锁此档不再探(同型号同内阻)
     this.setData({ stage: 'measure', idx: 1, rows: [], badText: '' });
     this.showCell(1);
   },
@@ -52,11 +53,17 @@ Page({
     const ble = getApp().globalData.ble;
     if (!ble) { wx.showToast({ title: '未连接', icon: 'none' }); return; }
     if (this.data.busy) return;
-    this.setData({ busy: true, prog: '自动选档…' });
+    const firstCell = (this.lockedGear == null);
+    this.setData({ busy: true, prog: firstCell ? '自动选档…' : ('锁档 ' + this.lockedGear.R + 'Ω') });
     try {
-      const r = await dev.runSweep(ble, { auto: true, fast: 1, avg: 1,
-        onAutoRange: (ar) => this.setData({ prog: '自动档 ' + ar.R + 'Ω' + (ar.current_A ? ' I≈' + ar.current_A.toFixed(2) + 'A' : '') }),
-        onPoint: (i) => this.setData({ prog: (i + 1) + '/20' }) });
+      // 第一颗: 固件自动探并锁档; 后面颗: 复用锁定的档, 不再探(同包同型号, 零浪费)
+      const sweepOpts = firstCell
+        ? { auto: true, fast: 1, avg: 1,
+            onAutoRange: (ar) => { this.lockedGear = { sel: ar.sel, R: ar.R };
+              this.setData({ prog: '锁档 ' + ar.R + 'Ω' }); } }
+        : { auto: false, samp: this.lockedGear.sel, fast: 1, avg: 1 };
+      sweepOpts.onPoint = (i) => this.setData({ prog: (i + 1) + '/20' });
+      const r = await dev.runSweep(ble, sweepOpts);
       const a = A.analyze(r.hz, r.re, r.im);
       const e = A.ecmFit(r.hz, r.re, r.im);
       if (!e) { this.setData({ busy: false }); this.retry('拟合失败/点数不足'); return; }
