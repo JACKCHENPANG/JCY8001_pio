@@ -59,18 +59,23 @@ if L_nH is None and DO_COMP:
         num = sum((zpp * 1e-6) * (2 * math.pi * f) for f, zpp in hf)
         den = sum((2 * math.pi * f) ** 2 for f, _ in hf)
         L = num / den                                        # H
-        Li = [(zpp * 1e-6) / (2 * math.pi * f) for f, zpp in hf]   # 各点单独的 L (H)
-        mean = sum(Li) / len(Li)
-        sd = (sum((x - mean) ** 2 for x in Li) / len(Li)) ** 0.5
-        cv = sd / mean if mean else 0
-        L_nH = L * 1e9
-        verdict = ('优·可信' if cv < 0.05 else '一般' if cv < 0.15 else '⚠警告·L不可信')
-        verdict_en = ('reliable' if cv < 0.05 else 'fair' if cv < 0.15 else 'WARN: L unreliable')
-        print('L 拟合: %.1f nH  (高频%d点, CV=%.1f%% → %s)' % (L_nH, len(hf), cv * 100, verdict))
-        for f, zpp in hf:
-            print('   %.0fHz  L=%.1f nH' % (f, (zpp * 1e-6) / (2 * math.pi * f) * 1e9))
-        if cv >= 0.15:
-            print('⚠ 高频点 L 离散 >15%: 夹具噪声/接触松, 该缩短引线或做短路标定, 本次补偿仅供参考')
+        if L <= 0:
+            # 高频点已是容性 (高内阻电芯, 电感相对可忽略) → 无感性尾, 不补偿
+            L_nH = 0.0; cv = None; verdict_en = 'negligible'
+            print('高频无感性尾 (拟合 L≤0): 高内阻电芯, 电感可忽略, L=0 不补偿')
+        else:
+            Li = [(zpp * 1e-6) / (2 * math.pi * f) for f, zpp in hf]   # 各点单独的 L (H)
+            mean = sum(Li) / len(Li)
+            sd = (sum((x - mean) ** 2 for x in Li) / len(Li)) ** 0.5
+            cv = sd / mean if mean else 0
+            L_nH = L * 1e9
+            verdict = ('优·可信' if cv < 0.05 else '一般' if cv < 0.15 else '⚠警告·L不可信')
+            verdict_en = ('reliable' if cv < 0.05 else 'fair' if cv < 0.15 else 'WARN: L unreliable')
+            print('L 拟合: %.1f nH  (高频%d点, CV=%.1f%% → %s)' % (L_nH, len(hf), cv * 100, verdict))
+            for f, zpp in hf:
+                print('   %.0fHz  L=%.1f nH' % (f, (zpp * 1e-6) / (2 * math.pi * f) * 1e9))
+            if cv >= 0.15:
+                print('⚠ 高频点 L 离散 >15%: 夹具噪声/接触松, 该缩短引线或做短路标定, 本次补偿仅供参考')
     else:
         print('警告: 高频(>=%.0fHz)点不足2个, 无法拟合 L, 跳过补偿' % HF_MIN); DO_COMP = False
 
@@ -152,7 +157,13 @@ if DO_COMP and L_nH is not None:
         axc.plot([Rs + Rct], [0], 'rD', ms=6)
         axc.annotate('Rs+Rct=%.0f' % (Rs + Rct), (Rs + Rct, 0), color='#cf222e', fontsize=8,
                      textcoords='offset points', xytext=(2, -14))
-        axc.legend(loc='upper left', fontsize=8)
+        # Rct 跨距标注 (Rs ↔ Rs+Rct, 实轴上方双箭头)
+        ya = (yc + R) * 0.55
+        axc.annotate('', xy=(Rs, ya), xytext=(Rs + Rct, ya),
+                     arrowprops=dict(arrowstyle='<->', color='#7d4cdb', lw=1.6))
+        axc.text((Rs + Rs + Rct) / 2, ya + 4, 'Rct = %.0f uOhm' % Rct, color='#7d4cdb',
+                 fontsize=10, ha='center', fontweight='bold')
+        axc.legend(loc='upper right', fontsize=8)
     axc.plot([Rs], [0], 'r*', ms=16)
     axc.axhline(0, color='#bbb', lw=0.6); axc.grid(True, alpha=0.3)
     axc.set_xlabel("Z' (uOhm)"); axc.set_ylabel("-Z'' (uOhm)")

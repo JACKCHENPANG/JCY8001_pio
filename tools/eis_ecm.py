@@ -55,11 +55,13 @@ def resid(p):
 
 
 # 初值: L/Rs/Rct 粗估 + CPE/Warburg 经验值
-Rs0 = re[i_min] * 1e-6
-Rct0 = max((re[-1] - re[i_min]) * 1e-6 * 0.8, 1e-5)
+# 上界按本颗电芯量级自适应 (亚mΩ 低阻 ~ 几十mΩ 高阻三元都要覆盖)
+Rmax = max((re[-1]) * 1e-6 * 5, 1e-2)            # ≥10mΩ, 或谱跨度的 5×
+Rs0 = min(re[i_min] * 1e-6, Rmax * 0.9)
+Rct0 = min(max((re[-1] - re[i_min]) * 1e-6 * 0.8, 1e-5), Rmax * 0.9)
 p0 = [2e-7, Rs0, Rct0, 10.0, 0.85, 5e-5]
-lb = [1e-9, 1e-6, 1e-6, 1e-3, 0.3, 0.0]
-ub = [1e-6, 5e-3, 5e-3, 1e5, 1.0, 1e-1]
+lb = [1e-9, 1e-6, 1e-6, 1e-6, 0.3, 0.0]
+ub = [1e-6, Rmax, Rmax, 1e6, 1.0, 1e0]
 res = least_squares(resid, p0, bounds=(lb, ub), max_nfev=30000)
 L, Rs, Rct, Q, n, sig = res.x
 Cdl = (Q * (1 / Rs + 1 / Rct) ** (n - 1)) ** (1 / n)     # Brug 等效 Cdl

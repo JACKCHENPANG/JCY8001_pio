@@ -90,8 +90,10 @@ function analyze(hz, re, im, opts) {
   if (hz.length < 4) return out;
   const f = fitInductance(hz, re, im, opts.hfmin);
   if (f.L == null) return out;
-  out.L_nH = f.L_nH; out.cv = f.cv;
-  const imc = hz.map((h, k) => im[k] + 2 * Math.PI * h * f.L * 1e6);
+  // L≤0 = 高频无感性尾(高内阻电芯, 电感可忽略) → 不补偿
+  const L = f.L > 0 ? f.L : 0;
+  out.L_nH = f.L > 0 ? f.L_nH : 0; out.cv = f.L > 0 ? f.cv : null;
+  const imc = hz.map((h, k) => im[k] + 2 * Math.PI * h * L * 1e6);
   out.imc = imc;
   const iMin = findArtifact(re);
   for (let k = 0; k < iMin; k++) out.artifact.push(k);
@@ -143,11 +145,13 @@ function ecmFit(hz, re, im) {
   function cost(r) { return r.reduce((a, b) => a + b * b, 0); }
 
   // 初值 + 边界
-  const Rs0 = re[iMin] * 1e-6;
-  const Rct0 = Math.max((re[re.length - 1] - re[iMin]) * 1e-6 * 0.8, 1e-5);
+  // 上界按电芯量级自适应 (亚mΩ 低阻 ~ 几十mΩ 高阻三元都覆盖)
+  const Rmax = Math.max(re[re.length - 1] * 1e-6 * 5, 1e-2);
+  const Rs0 = Math.min(re[iMin] * 1e-6, Rmax * 0.9);
+  const Rct0 = Math.min(Math.max((re[re.length - 1] - re[iMin]) * 1e-6 * 0.8, 1e-5), Rmax * 0.9);
   let p = [2e-7, Rs0, Rct0, 10.0, 0.85, 5e-5];
-  const lb = [1e-9, 1e-6, 1e-6, 1e-3, 0.3, 0.0];
-  const ub = [1e-6, 5e-3, 5e-3, 1e5, 1.0, 1e-1];
+  const lb = [1e-9, 1e-6, 1e-6, 1e-6, 0.3, 0.0];
+  const ub = [1e-6, Rmax, Rmax, 1e6, 1.0, 1e0];
   const clamp = q => q.map((v, i) => Math.min(Math.max(v, lb[i]), ub[i]));
   p = clamp(p);
 
