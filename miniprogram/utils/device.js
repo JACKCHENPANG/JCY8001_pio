@@ -43,10 +43,19 @@ async function runSweep(ble, opts) {
   // 分批写 (FC10 一次最多 ~60 寄存器, 这里 <=20 直接一次)
   await ble.writeMulti(MB.REG.SWEEP_TABLE, codes);
   await ble.writeReg(MB.REG.SWEEP_COUNT, npts);
+  // 触发: 固件靠线圈上升沿启动, 必须先置 0 再置 1 制造沿(否则连测时第2次起不重扫, 读到残留)
+  await ble.writeCoil(MB.COIL.SWEEP_TRIG, 0);
+  await sleep(150);
   await ble.writeCoil(MB.COIL.SWEEP_TRIG, 1);
   const hz = [], re = [], im = [];
   let got = 0;
   const t0 = Date.now();
+  // 等"已完成数"复位 (新扫频确实开始), 避免读上一次残留
+  for (let w = 0; w < 40; w++) {
+    const dr = await ble.readHolding(MB.REG.SWEEP_DONE, 1);
+    if (dr.ok && dr.regs[0] < npts) break;
+    await sleep(200);
+  }
   while (got < npts) {
     await sleep(300);
     const d = await ble.readHolding(MB.REG.SWEEP_DONE, 1);
