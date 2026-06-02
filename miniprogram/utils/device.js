@@ -32,11 +32,68 @@ async function setParams(ble, p) {
   if (p.mode !== undefined) await ble.writeReg(MB.REG.ZM_MODE, p.mode);
 }
 
+// 单点 ZM: 设频率 -> 触发线圈 0x0000 -> 等完成 -> 读 RE/IM(μΩ 64位) + VZM(mV)
+async function singleZM(ble, freqCode, timeoutMs) {
+  timeoutMs = timeoutMs || 25000;
+  await ble.writeReg(MB.REG.ZM_FREQ, freqCode);
+  await ble.writeCoil(MB.COIL.ZM_TRIG, 0); await sleep(120);
+  await ble.writeCoil(MB.COIL.ZM_TRIG, 1);
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await sleep(300);
+    const st = await ble.readHolding(MB.REG.STATUS, 1);
+    if (st.ok && st.regs[0] === 0x0006) break;   // 测量完成
+  }
+  const rr = await ble.readHolding(MB.REG.RE_BASE, 4);
+  const ri = await ble.readHolding(MB.REG.IM_BASE, 4);
+  const vz = await ble.readHolding(MB.REG.VZM, 1);
+  const re = rr.ok ? MB.regs64ToUOhm(rr.regs) : 0;     // μΩ
+  const im = ri.ok ? MB.regs64ToUOhm(ri.regs) : 0;
+  const vzm = vz.ok ? (vz.regs[0] * 4800 / 16383 + 1200) : null;  // mV
+  return { re, im, vzm, mag: Math.hypot(re, im) };
+}
+
+// 自动选采样电阻档位: 先在 10Ω(最温和)探一点中频, 按"激励扰动电压"选档。
+// 扰动 = I·|Z| = (VZM/R)·|Z|, 目标 ≤ ~15mV(EIS 小信号)且尽量大电流提 SNR。
+// 返回 {sel, R, mag_uohm, pertV, note}。sel: 0=10Ω 1=5Ω 2=1Ω。
+async function autoRange(ble, opts) {
+  opts = opts || {};
+  const probeFreq = opts.probeFreq || 0x082E;       // ~87.7Hz 中频
+  const target = opts.targetPertV || 0.015;         // 15 mV
+  const GEARS = [{ sel: 2, R: 1 }, { sel: 1, R: 5 }, { sel: 0, R: 10 }];
+  await ble.writeReg(MB.REG.SAMP_RES, 0);           // 先 10Ω 探测(安全, 不过驱)
+  await ble.writeReg(MB.REG.ZM_FAST, 1);
+  const z = await singleZM(ble, probeFreq);
+  const magOhm = z.mag * 1e-6;
+  const vzmV = (z.vzm != null ? z.vzm : 3500) / 1000;
+  // 探测失败/无效(|Z|≈0) → 默认 10Ω(最安全, 不过驱)
+  if (!(magOhm > 0)) {
+    return { sel: 0, R: 10, mag_uohm: 0, vzm_mV: z.vzm, pertV: 0,
+             current_A: vzmV / 10, note: '探测失败, 默认 10Ω' };
+  }
+  // 选满足扰动≤target 的最小 R(电流最大/SNR最好); 都不满足→10Ω并告警
+  let pick = GEARS[GEARS.length - 1], warn = '';
+  for (const g of GEARS) {
+    const pert = (vzmV / g.R) * magOhm;
+    if (pert <= target) { pick = g; break; }
+  }
+  const pertPick = (vzmV / pick.R) * magOhm;
+  if (pertPick > target) warn = '内阻偏高, 10Ω档仍过驱(需更大采样电阻硬件)';
+  return { sel: pick.sel, R: pick.R, mag_uohm: z.mag, vzm_mV: z.vzm,
+           pertV: pertPick, current_A: vzmV / pick.R, note: warn };
+}
+
 // 固件自主扫频: 下发频点表 -> 触发 -> 轮询完成数边跑边取。
 // npts: 点数(<=20); onPoint(idx,hz,re,im); 返回 {hz:[],re:[],im:[]}
 async function runSweep(ble, opts) {
   opts = opts || {};
   const npts = Math.min(opts.npts || PTS.length, PTS.length);
+  // 自动挡: 先探测内阻按扰动选采样电阻档
+  if (opts.auto) {
+    const ar = await autoRange(ble, opts);
+    opts.samp = ar.sel;
+    if (opts.onAutoRange) opts.onAutoRange(ar);
+  }
   await setParams(ble, opts);
   // 下发频点表 (FC10 到 0x4400) + 点数
   const codes = PTS.slice(0, npts).map(p => p[0]);
@@ -74,4 +131,4 @@ async function runSweep(ble, opts) {
   return { hz, re, im };
 }
 
-module.exports = { PTS, readBasic, setParams, runSweep, sleep };
+module.exports = { PTS, readBasic, setParams, runSweep, singleZM, autoRange, sleep };

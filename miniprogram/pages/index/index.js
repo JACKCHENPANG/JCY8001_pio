@@ -39,11 +39,14 @@ Page({
   async onSweep() {
     const app = getApp();
     if (!app.globalData.ble) { wx.showToast({ title: '请先连接', icon: 'none' }); return; }
-    this.setData({ busy: true, prog: '0/20', pts: [], rs: '-', rct: '-', lnh: '-', ecm: '测量中…' });
+    this.setData({ busy: true, prog: '自动选档…', pts: [], rs: '-', rct: '-', lnh: '-', ecm: '测量中…' });
     const re = [], im = [], hz = [];
     try {
       const r = await dev.runSweep(app.globalData.ble, {
-        samp: 2, fast: 1, avg: 1,
+        auto: true, fast: 1, avg: 1,
+        onAutoRange: (ar) => this.setData({
+          prog: '档位 ' + ar.R + 'Ω (I≈' + ar.current_A.toFixed(2) + 'A)' + (ar.note ? ' ⚠' : ''),
+        }),
         onPoint: (i, f, x, y) => {
           hz.push(f); re.push(x); im.push(y);
           this.setData({ prog: (i + 1) + '/20' });
