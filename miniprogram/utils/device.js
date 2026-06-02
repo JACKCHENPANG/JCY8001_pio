@@ -88,11 +88,16 @@ async function autoRange(ble, opts) {
 async function runSweep(ble, opts) {
   opts = opts || {};
   const npts = Math.min(opts.npts || PTS.length, PTS.length);
-  // 自动挡: 先探测内阻按扰动选采样电阻档
-  if (opts.auto) {
+  // 自动挡: 优先用固件底层自动挡(0x4380=1, 扫频前固件自己探中低频点定档, 省 BLE 来回);
+  // 固件不支持(老版本)则回退主机端探测。
+  if (opts.auto && !opts.hostAuto) {
+    await ble.writeReg(MB.REG.AUTORANGE, 1);
+  } else if (opts.auto) {
     const ar = await autoRange(ble, opts);
     opts.samp = ar.sel;
     if (opts.onAutoRange) opts.onAutoRange(ar);
+  } else {
+    await ble.writeReg(MB.REG.AUTORANGE, 0);
   }
   await setParams(ble, opts);
   // 下发频点表 (FC10 到 0x4400) + 点数
@@ -128,7 +133,17 @@ async function runSweep(ble, opts) {
     }
     if (Date.now() - t0 > 180000) break;     // 3min 超时保护
   }
-  return { hz, re, im };
+  // 固件自动挡: 回读固件最终选的档位上报
+  let gear = null;
+  if (opts.auto && !opts.hostAuto) {
+    const sr = await ble.readHolding(MB.REG.SAMP_RES, 1);
+    if (sr.ok) {
+      const R = [10, 5, 1][sr.regs[0]] || 10;
+      gear = { sel: sr.regs[0], R: R };
+      if (opts.onAutoRange) opts.onAutoRange(gear);
+    }
+  }
+  return { hz, re, im, gear };
 }
 
 module.exports = { PTS, readBasic, setParams, runSweep, singleZM, autoRange, sleep };

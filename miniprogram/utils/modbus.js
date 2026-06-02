@@ -74,7 +74,7 @@ const REG = {
   TEMP: 0x3300, VOLT: 0x3340, STATUS: 0x3380,
   CH_COUNT: 0x3E00, FW_VER: 0x3E02, BUILD_DATE: 0x3E04,
   ZM_FREQ: 0x4200, SAMP_RES: 0x40C0, ZM_GAIN: 0x4280, AVG: 0x4040,
-  ZM_FAST: 0x4340, ZM_MODE: 0x4300,
+  ZM_FAST: 0x4340, ZM_MODE: 0x4300, AUTORANGE: 0x4380,
   RE_BASE: 0x3000, IM_BASE: 0x3080,          // 单点 64位 μΩ
   VZM: 0x3200,                                // 单点 VZM 原始 (raw*4800/16383+1200 mV)
   // 固件自主扫频

@@ -45,7 +45,7 @@ Page({
       const r = await dev.runSweep(app.globalData.ble, {
         auto: true, fast: 1, avg: 1,
         onAutoRange: (ar) => this.setData({
-          prog: '档位 ' + ar.R + 'Ω (I≈' + ar.current_A.toFixed(2) + 'A)' + (ar.note ? ' ⚠' : ''),
+          prog: '自动档 ' + ar.R + 'Ω' + (ar.current_A ? ' (I≈' + ar.current_A.toFixed(2) + 'A)' : '') + (ar.note ? ' ⚠' : ''),
         }),
         onPoint: (i, f, x, y) => {
           hz.push(f); re.push(x); im.push(y);

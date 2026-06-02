@@ -55,6 +55,7 @@ volatile uint8_t  bal_start_req;     // FC05/0F 线圈 0x0040 触发均衡启动
 volatile uint16_t jcy_zm_mode;       // 0x4300 ZM 测量模式: 0=普通, 1=低阻低频(强制 LFNS+增益16)
 volatile uint16_t jcy_zm_fast;       // 0x4340 ZM 速度: 0=标准(转换门余量足,稳), 1=快速(余量紧,~省一半时间)
 volatile uint16_t jcy_zm_convovr;    // 0x4360 调试: 转换门周期数覆盖(0=按频率自动). 用于标定最低收敛周期
+volatile uint16_t jcy_autorange;     // 0x4380 自动挡: 0=关(用jcy_samp_res), 1=开(扫频第1点用10Ω探, 按激励扰动选档锁定)
 // ── 固件自主扫频 (EIS sweep): 上位机一次性下发频点表→触发→固件逐点测→边跑可边读/完成批量读 ──
 #define SWEEP_MAX  64                  // 最大频点数
 volatile uint16_t jcy_sweep_freq[SWEEP_MAX]; // 0x4400+idx 频点表 (16位 M/E 字, 同 0x4200 格式)
@@ -80,7 +81,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0220;   // v2.20 (USART1/J12 = 9600, 匹配 JDY-10 透传蓝牙, 免配)
+    jcy_fw_version = 0x0221;   // v2.21 (固件自动挡: 扫频第0点10Ω探+按扰动定档锁定, 0x4380开关)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -154,6 +155,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x4300: return jcy_zm_mode;          // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: return jcy_zm_fast;          // ZM 速度 0=标准 1=快速
         case 0x4360: return jcy_zm_convovr;       // 转换门覆盖(调试)
+        case 0x4380: return jcy_autorange;        // 自动挡 0=关 1=开
         case 0x43C0: return jcy_sweep_count;      // 扫频频点数 N
         case 0x3E40: return jcy_sweep_state;      // 扫频状态 0空闲/1跑中/2完成/3中止
         case 0x3E41: return jcy_sweep_idx;        // 已完成点数
@@ -226,14 +228,46 @@ static void set_reg(uint16_t addr, uint16_t val) {
         case 0x4300: jcy_zm_mode  = val; break;              // ZM 测量模式 0=普通 1=低阻低频
         case 0x4340: jcy_zm_fast  = val; break;              // ZM 速度 0=标准 1=快速
         case 0x4360: jcy_zm_convovr = val; break;            // 转换门覆盖(调试)
+        case 0x4380: jcy_autorange  = val; break;            // 自动挡开关
         case 0x4F0A: jcy_zm_mode  = val; break;              // 群发 ZM 测量模式
         case 0x43C0: jcy_sweep_count = (val > SWEEP_MAX) ? SWEEP_MAX : val; break;  // 扫频频点数 N
     }
 }
 
+/* ── 自动挡: 用探测点(10Ω, 中低频~9.5Hz, |Z|接近最大)的 RE/IM/VZM, 按激励扰动 I·|Z|≤15mV 选最小采样电阻 ──
+ * |Z|=√(re²+im²)·1e-6 Ω (re/im 为 μΩ); I=VZM/R; 取扰动达标的最小 R(电流最大/SNR好)。
+ * 都不达标→10Ω。R 取可标定的 dnb_zm_get_resis(sel)。返回 sel(0=10Ω 1=5Ω 2=1Ω)。
+ * ⚠️必须用中低频探(高频|Z|只是电芯一部分, 会低估→选档偏小→低频端过驱)。 */
+static uint8_t autorange_probing = 0;          /* 正在测探测点(非扫频点) */
+#define AUTORANGE_PROBE_FREQ 0x070A            /* ~9.5Hz 探测频率 */
+static uint8_t autorange_pick(long long re, long long im, uint16_t vzm) {
+    long long re_u = re / 100000, im_u = im / 100000;          /* μΩ */
+    double s2 = (double)re_u * re_u + (double)im_u * im_u;      /* μΩ² */
+    if (!(s2 > 0.0)) return 0;                                  /* 探测失败/无信号 → 安全用 10Ω */
+    double vzmV = (vzm * 4800.0 / 16383.0 + 1200.0) / 1000.0;  /* V */
+    const uint8_t order[3] = { 2, 1, 0 };                       /* 1Ω,5Ω,10Ω: 小R(大电流)优先 */
+    const double target2 = 0.015 * 0.015;                       /* (15mV)² */
+    for (int k = 0; k < 3; k++) {
+        uint8_t s = order[k];
+        double R = (double)dnb_zm_get_resis(s);
+        double pert2 = (vzmV / R) * (vzmV / R) * s2 * 1e-12;    /* (I·|Z|)² */
+        if (pert2 <= target2) return s;
+    }
+    return 0;   /* 10Ω 仍过驱 → 用10Ω */
+}
+
 /* ── 扫频: 一个频点测完(成功或ADC错)后调用: 存结果→推进到下一点或收尾 ── */
 static void sweep_on_point_done(long long re, long long im, uint16_t vzm) {
     if (!sweep_running) return;
+    /* 自动挡: 这是探测点(10Ω@~9.5Hz)的结果 → 定档锁定, 然后正式从第0点开始扫(不存探测点) */
+    if (autorange_probing) {
+        autorange_probing = 0;
+        jcy_samp_res = autorange_pick(re, im, vzm);
+        jcy_sweep_idx   = 0;
+        jcy_zm_freq_set = jcy_sweep_freq[0];
+        zm_start_req    = 1;
+        return;
+    }
     uint16_t i = jcy_sweep_idx;
     if (i < jcy_sweep_count && i < SWEEP_MAX) {
         jcy_sweep_re[i]   = re;
@@ -870,8 +904,14 @@ int main(void)
                     sweep_running   = 1;
                     jcy_sweep_state = 1;            // 跑中
                     jcy_sweep_idx   = 0;
-                    jcy_zm_freq_set = jcy_sweep_freq[0];
-                    zm_start_req    = 1;            // 触发第 0 点 (本 tick 立即处理)
+                    if (jcy_autorange) {            // 自动挡: 先用 10Ω 在中低频探测点定档, 再正式扫
+                        jcy_samp_res = 0;            // 探测用 10Ω(最温和)
+                        autorange_probing = 1;
+                        jcy_zm_freq_set = AUTORANGE_PROBE_FREQ;
+                    } else {
+                        jcy_zm_freq_set = jcy_sweep_freq[0];
+                    }
+                    zm_start_req    = 1;            // 触发(探测点 或 第0点)
                 } else if (!sweep_start_req && last_sweep_req && sweep_running) {
                     sweep_running   = 0;
                     jcy_sweep_state = 3;            // 中止

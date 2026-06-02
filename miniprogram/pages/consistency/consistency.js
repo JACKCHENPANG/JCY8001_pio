@@ -55,7 +55,7 @@ Page({
     this.setData({ busy: true, prog: '自动选档…' });
     try {
       const r = await dev.runSweep(ble, { auto: true, fast: 1, avg: 1,
-        onAutoRange: (ar) => this.setData({ prog: ar.R + 'Ω I≈' + ar.current_A.toFixed(2) + 'A' }),
+        onAutoRange: (ar) => this.setData({ prog: '自动档 ' + ar.R + 'Ω' + (ar.current_A ? ' I≈' + ar.current_A.toFixed(2) + 'A' : '') }),
         onPoint: (i) => this.setData({ prog: (i + 1) + '/20' }) });
       const a = A.analyze(r.hz, r.re, r.im);
       const e = A.ecmFit(r.hz, r.re, r.im);
