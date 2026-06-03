@@ -549,11 +549,10 @@ def analyze_eis(hz, re, im, hfmin=300.0, do_comp=True):
                trusted=list(range(n)), Rs=None, Rct=None, circle=None)
     if n < 4 or not do_comp:
         return out
-    # 0) 剔高频实部"回跌"伪迹: 列表 HF->LF, 高频端(≥200Hz)实部比相邻低频点还小
-    #    = 非物理(引线互感把 Z' 拉低甚至拉负), 否则它会冒充 Z'min 毒化 Rs/L 拟合
-    HF_ART_HZ = 200.0
+    # 0) 剔高频无效/掉点: RE<=0(读0掉点) 或比相邻低频点骤降(<0.6×, 引线互感/接触瞬断伪迹)
+    #    注意: 正常谱高频实部随频率下降而单调上升, 不能按 re[k]<re[k+1] 剔(会误删整段)
     hf_skip = 0
-    while hf_skip < n - 1 and hz[hf_skip] >= HF_ART_HZ and re[hf_skip] < re[hf_skip + 1]:
+    while hf_skip < n - 1 and (re[hf_skip] <= 0 or re[hf_skip] < 0.6 * re[hf_skip + 1]):
         hf_skip += 1
     # 1) 高频拟合 L: Z''=-im≈wL → 最小二乘过原点 (排除回跌伪迹点)
     hf = [(h, -i) for j, (h, i) in enumerate(zip(hz, im)) if h >= hfmin and j >= hf_skip]
