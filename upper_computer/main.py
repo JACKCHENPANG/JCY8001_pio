@@ -549,8 +549,16 @@ def analyze_eis(hz, re, im, hfmin=300.0, do_comp=True):
                trusted=list(range(n)), Rs=None, Rct=None, circle=None)
     if n < 4 or not do_comp:
         return out
-    # 1) 高频拟合 L: Z''=-im≈wL → 最小二乘过原点
-    hf = [(h, -i) for h, i in zip(hz, im) if h >= hfmin]
+    # 0) 剔高频实部"回跌"伪迹: 列表 HF->LF, 高频端(≥200Hz)实部比相邻低频点还小
+    #    = 非物理(引线互感把 Z' 拉低甚至拉负), 否则它会冒充 Z'min 毒化 Rs/L 拟合
+    HF_ART_HZ = 200.0
+    hf_skip = 0
+    while hf_skip < n - 1 and hz[hf_skip] >= HF_ART_HZ and re[hf_skip] < re[hf_skip + 1]:
+        hf_skip += 1
+    # 1) 高频拟合 L: Z''=-im≈wL → 最小二乘过原点 (排除回跌伪迹点)
+    hf = [(h, -i) for j, (h, i) in enumerate(zip(hz, im)) if h >= hfmin and j >= hf_skip]
+    if len(hf) < 2:                            # 剔完不够则放宽用全部 ≥hfmin
+        hf = [(h, -i) for h, i in zip(hz, im) if h >= hfmin]
     if len(hf) < 2:
         return out
     num = sum((zpp * 1e-6) * (2 * _m.pi * f) for f, zpp in hf)
@@ -564,9 +572,9 @@ def analyze_eis(hz, re, im, hfmin=300.0, do_comp=True):
     # 2) 减 jωL
     im_c = [i + (2 * _m.pi * h) * L * 1e6 for h, i in zip(hz, im)]
     out["im_c"] = im_c
-    # 3) 剔高频伪迹: 实部 Z'min 以上(更高频)的点 (列表按 HF->LF)
-    i_min = min(range(n), key=lambda k: re[k])
-    out["artifact"] = list(range(0, i_min))
+    # 3) 剔高频伪迹: 回跌点(0..hf_skip) + 实部 Z'min 以上(更高频)的点 (列表按 HF->LF)
+    i_min = min(range(hf_skip, n), key=lambda k: re[k])
+    out["artifact"] = list(range(0, i_min))    # 自动含 hf_skip 回跌点(i_min≥hf_skip)
     out["trusted"] = list(range(i_min, n))
     out["Rs"] = re[i_min]                      # 默认回退 = Z'min
     # 4) Rct 半圆拟合 (i_min..峰后第一个谷, 避开 Warburg)
