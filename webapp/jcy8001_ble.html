@@ -29,7 +29,7 @@
 </div>
 
 <div class="card">
-  <div class="row"><span class="lbl">用户(手机号)</span><input id="phone" placeholder="填一次, 自动记住" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:55%"></div>
+  <div class="row"><span class="lbl">用户(手机号)</span><input id="phone" inputmode="numeric" maxlength="11" placeholder="11位手机号, 填一次自动记住" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:60%"></div>
   <div class="row"><span class="lbl">电池码</span><input id="bcode" placeholder="本次电池编号" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:55%"></div>
   <div class="row"><span class="lbl">保存</span><span class="val" id="saveSt" style="font-size:13px">测完自动存</span></div>
 </div>
@@ -392,7 +392,10 @@ function finishAnalyze(hz,re,im){
 async function saveRecord(){
   if(!gLast){return;}
   const phone=($('phone').value||'').trim(), bcode=($('bcode').value||'').trim();
-  if(!bcode){$('saveSt').textContent='⚠ 未填电池码, 没存';return;}
+  if(!/^\d{11}$/.test(phone)){$('saveSt').textContent='⚠ 手机号需11位数字, 未保存';$('phone').style.borderBottom='1px solid #ff3b30';return;}
+  $('phone').style.borderBottom='1px solid #ddd';
+  if(!bcode){$('saveSt').textContent='⚠ 未填电池码, 未保存';$('bcode').style.borderBottom='1px solid #ff3b30';return;}
+  $('bcode').style.borderBottom='1px solid #ddd';
   $('saveSt').textContent='保存中...';
   try{
     const o=gLast.o, ecm=gLast.ecm;
