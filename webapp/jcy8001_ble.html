@@ -57,6 +57,7 @@
   <div class="row"><div class="title">阻抗谱 (自动挡)</div><button id="btnSweep" disabled>开始扫频</button></div>
   <div class="row"><span class="lbl">内阻挡位</span>
     <select id="range">
+      <option value="auto">自动挡 (固件自动选, 推荐)</option>
       <option value="2">1Ω 挡 (电芯~1mΩ)</option>
       <option value="1">5Ω 挡 (~10mΩ)</option>
       <option value="0">10Ω 挡 (~100mΩ)</option>
@@ -379,8 +380,10 @@ $('btnConn').onclick=async()=>{
 $('btnSweep').onclick=async()=>{
   const N=parseInt($('mode').value); $('btnSweep').disabled=true; $('ecm').textContent='';
   try{
-    const samp=parseInt($('range').value); localStorage.setItem('jcy_range',$('range').value);
-    await w06(REG.SAMP_RES,samp); await w06(REG.ZM_GAIN,1); await w06(REG.AVG,4);
+    const sel=$('range').value; localStorage.setItem('jcy_range',sel);
+    if(sel==='auto'){ await w06(REG.AUTORANGE,1); }            // 固件自动挡: 扫前自己探点定档
+    else { await w06(REG.AUTORANGE,0); await w06(REG.SAMP_RES,parseInt(sel)); }
+    await w06(REG.ZM_GAIN,1); await w06(REG.AVG,4);
     await w06(REG.ZM_FAST,0); await w06(REG.ZM_MODE,0);
     for(let i=0;i<N;i++) await w06(REG.SWEEP_TABLE+i,DEFAULT_CODES[i]); // 逐寄存器写避BLE分帧
     await w06(REG.SWEEP_COUNT,N);
