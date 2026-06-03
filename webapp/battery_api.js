@@ -2,8 +2,12 @@
 // 跑: pm2 start battery_api.js --node-args="--experimental-sqlite" --name battery-api
 'use strict';
 const http = require('node:http');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const PORT = 3010;
+const PHOTO_DIR = '/root/jcy-test-data/photos';
+try { fs.mkdirSync(PHOTO_DIR, { recursive: true }); } catch {}
 const TOKEN = process.env.JCY_API_TOKEN || 'jcy8001-prod-7f3a2c9b5e';   // 产线 token
 const DB_PATH = '/root/jcy-test-data/battery_trace.db';
 
@@ -16,15 +20,28 @@ db.exec(`CREATE TABLE IF NOT EXISTS battery_impedance_tests(
   rs REAL, rct REAL, l_nh REAL,
   ecm_json TEXT, temp REAL, volt REAL,
   device_id TEXT, operator TEXT, raw_json TEXT,
+  photo_path TEXT,
   measured_at TEXT,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );`);
+// 旧库补列(已存在则忽略)
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN photo_path TEXT`); } catch {}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_code_time ON battery_impedance_tests(battery_code, measured_at);`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_user_time ON battery_impedance_tests(user_phone, measured_at);`);
 
 const ins = db.prepare(`INSERT INTO battery_impedance_tests
- (user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,measured_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+ (user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,photo_path,measured_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+
+function savePhoto(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string') return null;
+  const m = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+  if (!m) return null;
+  const ext = m[1] === 'png' ? 'png' : 'jpg';
+  const fn = Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.' + ext;
+  fs.writeFileSync(PHOTO_DIR + '/' + fn, Buffer.from(m[2], 'base64'));
+  return fn;
+}
 
 function send(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -54,18 +71,20 @@ http.createServer(async (req, res) => {
   if (req.method === 'POST' && u.pathname === '/save') {
     const b = await readBody(req);
     if (!b || !b.battery_code) return send(res, 400, { ok: false, err: 'battery_code required' });
+    let photo = null;
+    try { photo = savePhoto(b.photo); } catch (e) { photo = null; }
     const r = ins.run(
       str(b.user_phone), String(b.battery_code), JSON.stringify(b.spectrum || null),
       num(b.rs), num(b.rct), num(b.l_nh), JSON.stringify(b.ecm || null),
       num(b.temp), num(b.volt), str(b.device_id), str(b.operator),
-      JSON.stringify(b.raw || null), str(b.measured_at) || new Date().toISOString());
-    return send(res, 200, { ok: true, id: Number(r.lastInsertRowid) });
+      JSON.stringify(b.raw || null), photo, str(b.measured_at) || new Date().toISOString());
+    return send(res, 200, { ok: true, id: Number(r.lastInsertRowid), photo: photo });
   }
   if (req.method === 'GET' && u.pathname === '/list') {
     const code = u.searchParams.get('code');
     const phone = u.searchParams.get('phone');
     const lim = Math.min(parseInt(u.searchParams.get('limit') || '50'), 500);
-    const cols = `id,user_phone,battery_code,rs,rct,l_nh,temp,volt,measured_at,created_at`;
+    const cols = `id,user_phone,battery_code,rs,rct,l_nh,temp,volt,photo_path,measured_at,created_at`;
     const where = []; const args = [];
     if (phone) { where.push('user_phone=?'); args.push(phone); }
     if (code) { where.push('battery_code=?'); args.push(code); }
