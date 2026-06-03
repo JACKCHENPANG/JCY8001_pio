@@ -369,7 +369,7 @@ static void usart1_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
     /* PA9 = AF push-pull 50MHz (0xB), PA10 = floating input (0x4) */
     GPIOA->CRH = (GPIOA->CRH & 0xFFFFF00F) | 0x000004B0;
-    USART1->BRR = 0x0341;                 /* 9600 @ PCLK2=8MHz (匹配 JDY-10 默认 UART 波特率, 模块免配) */
+    USART1->BRR = 0x45;                   /* 115200 @ PCLK2=8MHz (匹配 JDY-10 出厂默认 UART, 模块免配) */
     USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
     NVIC_SetPriority(USART1_IRQn, 1);
     NVIC_EnableIRQ(USART1_IRQn);
