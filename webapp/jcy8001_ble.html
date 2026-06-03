@@ -55,6 +55,13 @@
 
 <div class="card">
   <div class="row"><div class="title">阻抗谱 (自动挡)</div><button id="btnSweep" disabled>开始扫频</button></div>
+  <div class="row"><span class="lbl">内阻挡位</span>
+    <select id="range">
+      <option value="2">1Ω 挡 (电芯~1mΩ)</option>
+      <option value="1">5Ω 挡 (~10mΩ)</option>
+      <option value="0">10Ω 挡 (~100mΩ)</option>
+    </select>
+  </div>
   <div class="row"><span class="lbl">点数</span>
     <select id="mode"><option value="20">全扫 20点 (到~1.9Hz)</option><option value="12">快扫 12点 (到~13Hz)</option></select>
   </div>
@@ -372,7 +379,8 @@ $('btnConn').onclick=async()=>{
 $('btnSweep').onclick=async()=>{
   const N=parseInt($('mode').value); $('btnSweep').disabled=true; $('ecm').textContent='';
   try{
-    await w06(REG.SAMP_RES,2); await w06(REG.ZM_GAIN,1); await w06(REG.AVG,4);
+    const samp=parseInt($('range').value); localStorage.setItem('jcy_range',$('range').value);
+    await w06(REG.SAMP_RES,samp); await w06(REG.ZM_GAIN,1); await w06(REG.AVG,4);
     await w06(REG.ZM_FAST,0); await w06(REG.ZM_MODE,0);
     for(let i=0;i<N;i++) await w06(REG.SWEEP_TABLE+i,DEFAULT_CODES[i]); // 逐寄存器写避BLE分帧
     await w06(REG.SWEEP_COUNT,N);
@@ -463,6 +471,8 @@ function draw(hz,re,im,o){
   const v=localStorage.getItem('jcy_'+id); if(v)$(id).value=v;
   $(id).addEventListener('input',()=>localStorage.setItem('jcy_'+id,$(id).value));
 });
+{const rv=localStorage.getItem('jcy_range'); if(rv)$('range').value=rv;
+ $('range').addEventListener('change',()=>localStorage.setItem('jcy_range',$('range').value));}
 $('btnHist').onclick=loadHistory;
 $('btnExport').onclick=async()=>{
   const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();
