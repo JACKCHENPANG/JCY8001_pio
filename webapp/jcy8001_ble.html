@@ -18,7 +18,7 @@
  select{font-size:14px;padding:4px}
  .ok{color:#34c759}.bad{color:#ff3b30}
 </style></head><body>
-<div class="nav">JCY8001 阻抗谱 · 蓝牙</div>
+<div class="nav">🐳 鲸测云 · JCY8001 阻抗测试</div>
 
 <div class="card">
   <div class="row"><div class="title">设备</div><button id="btnConn">连接蓝牙</button></div>
@@ -81,8 +81,11 @@
   <div id="histBox" style="font-size:13px;color:#444;max-height:240px;overflow:auto"></div>
 </div>
 
-<div class="card" style="font-size:12px;color:#8e8e93">
- JDY-10 默认服务 FFE0/特征 FFE1。安卓 Chrome 打开本页 → 连接蓝牙 → 选 JDY-10。不依赖微信/无需备案。数据存鲸测云服务器, 按手机号分开。
+<div class="card" style="font-size:12px;color:#8e8e93;text-align:center">
+ <div style="font-weight:600;color:#1c1c1e">鲸测云科技 · JCY8001 电池阻抗测试系统</div>
+ <div style="margin:4px 0">版本 <span id="ver"></span> · www.jcytest.com</div>
+ <div style="margin-top:6px">安卓 Chrome 打开 · 连 JDY-10 蓝牙(FFE0/FFE1) · 数据按手机号分存 · 不依赖微信/无需备案</div>
+ <div style="margin-top:4px;color:#c8c8cc">© 2026 鲸测云科技</div>
 </div>
 
 <script>
@@ -351,6 +354,7 @@ async function w06(reg,val){await txn(writeReg(reg,val),8);}
 async function coil(a,on){await txn(writeCoil(a,on),8);}
 
 // ============== 数据后端 ==============
+const APP_VERSION='v1.0.0 (2026-06-04)';   // 改版本号在这里
 const API_BASE='/battery-api';   // 同域反代; GitHub Pages 上无此接口(仅演示)
 const API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 let gTemp=null,gVolt=null,gLast=null,gPhoto=null;
@@ -524,6 +528,7 @@ $('btnScan').onclick=async()=>{
 function stopScan(){scanRun=false;$('scanModal').style.display='none';if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}}
 $('scanCancel').onclick=stopScan;
 
+$('ver').textContent=APP_VERSION;
 if(!navigator.bluetooth){document.querySelector('.nav').textContent='此浏览器不支持 Web 蓝牙(用安卓 Chrome)';}
 </script>
 </body></html>
