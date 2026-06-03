@@ -29,6 +29,12 @@
 </div>
 
 <div class="card">
+  <div class="row"><span class="lbl">用户(手机号)</span><input id="phone" placeholder="填一次, 自动记住" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:55%"></div>
+  <div class="row"><span class="lbl">电池码</span><input id="bcode" placeholder="本次电池编号" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:55%"></div>
+  <div class="row"><span class="lbl">保存</span><span class="val" id="saveSt" style="font-size:13px">测完自动存</span></div>
+</div>
+
+<div class="card">
   <div class="row"><div class="title">阻抗谱 (自动挡)</div><button id="btnSweep" disabled>开始扫频</button></div>
   <div class="row"><span class="lbl">点数</span>
     <select id="mode"><option value="20">全扫 20点 (到~1.9Hz)</option><option value="12">快扫 12点 (到~13Hz)</option></select>
@@ -41,8 +47,15 @@
   <div class="row"><span class="lbl">进度</span><span class="val" id="prog">—</span></div>
 </div>
 
+<div class="card">
+  <div class="row"><div class="title">历史记录</div>
+    <span><button id="btnHist" class="ghost" style="margin-right:6px">查我的</button><button id="btnExport" class="ghost">导出CSV</button></span>
+  </div>
+  <div id="histBox" style="font-size:13px;color:#444;max-height:240px;overflow:auto"></div>
+</div>
+
 <div class="card" style="font-size:12px;color:#8e8e93">
- JDY-10 默认服务 FFE0/特征 FFE1。安卓 Chrome 打开本页 → 连接蓝牙 → 选 JDY-10。不依赖微信/无需备案。
+ JDY-10 默认服务 FFE0/特征 FFE1。安卓 Chrome 打开本页 → 连接蓝牙 → 选 JDY-10。不依赖微信/无需备案。数据存鲸测云服务器, 按手机号分开。
 </div>
 
 <script>
@@ -310,6 +323,18 @@ async function rdI64(reg){const regs=await rd(reg,4);return regs64ToUOhm(regs,0)
 async function w06(reg,val){await txn(writeReg(reg,val),8);}
 async function coil(a,on){await txn(writeCoil(a,on),8);}
 
+// ============== 数据后端 ==============
+const API_BASE='/battery-api';   // 同域反代; GitHub Pages 上无此接口(仅演示)
+const API_TOKEN='jcy8001-prod-7f3a2c9b5e';
+let gTemp=null,gVolt=null,gLast=null;
+async function apiPost(path,body){
+  const r=await fetch(API_BASE+path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+API_TOKEN},body:JSON.stringify(body)});
+  return r.json();
+}
+async function apiGet(path){
+  const r=await fetch(API_BASE+path,{headers:{'Authorization':'Bearer '+API_TOKEN}});
+  return r.json();
+}
 // ============== UI ==============
 const $=id=>document.getElementById(id);
 function setStatus(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
@@ -320,8 +345,8 @@ $('btnConn').onclick=async()=>{
     setStatus('已连接 (BLE)',true);
     const fw=(await rd(REG.FW_VER,1))[0];
     $('fw').textContent='v'+((fw>>8)&0xFF).toString(16)+'.'+String(fw&0xFF).padStart(2,'0');
-    $('tp').textContent=((await rd(REG.TEMP,1))[0]/10).toFixed(1)+' °C';
-    $('vt').textContent=((await rd(REG.VOLT,1))[0]/10000).toFixed(4)+' V';
+    gTemp=(await rd(REG.TEMP,1))[0]/10; $('tp').textContent=gTemp.toFixed(1)+' °C';
+    gVolt=(await rd(REG.VOLT,1))[0]/10000; $('vt').textContent=gVolt.toFixed(4)+' V';
     $('btnSweep').disabled=false; $('btnConn').textContent='已连接';
   }catch(e){setStatus('连接失败: '+e.message,false);}
 };
@@ -361,6 +386,37 @@ function finishAnalyze(hz,re,im){
   if(ecm)$('ecm').textContent='ECM: Rs='+(ecm.Rs_uOhm/1000).toFixed(3)+' Rct='+(ecm.Rct_uOhm/1000).toFixed(3)+' mΩ · n='+ecm.n.toFixed(2)+' · RMS '+ecm.rms.toFixed(2)+'%';
   draw(H,R,I,o);
   $('prog').textContent='完成 ('+H.length+'点)';
+  gLast={hz:H,re:R,im:I,o:o,ecm:ecm};
+  saveRecord();
+}
+async function saveRecord(){
+  if(!gLast){return;}
+  const phone=($('phone').value||'').trim(), bcode=($('bcode').value||'').trim();
+  if(!bcode){$('saveSt').textContent='⚠ 未填电池码, 没存';return;}
+  $('saveSt').textContent='保存中...';
+  try{
+    const o=gLast.o, ecm=gLast.ecm;
+    const body={user_phone:phone,battery_code:bcode,
+      spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},
+      rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,
+      ecm:ecm?{rs:ecm.Rs_uOhm,rct:ecm.Rct_uOhm,n:ecm.n,rms:ecm.rms}:null,
+      temp:gTemp,volt:gVolt,device_id:'JDY-10',measured_at:new Date().toISOString()};
+    const r=await apiPost('/save',body);
+    $('saveSt').textContent=r.ok?('已存 #'+r.id):('存失败: '+(r.err||'?'));
+  }catch(e){$('saveSt').textContent='存失败(离线?): '+e.message;}
+}
+async function loadHistory(){
+  const phone=($('phone').value||'').trim(), bcode=($('bcode').value||'').trim();
+  let q='/list?limit=50'; if(phone)q+='&phone='+encodeURIComponent(phone); if(bcode)q+='&code='+encodeURIComponent(bcode);
+  $('histBox').textContent='查询中...';
+  try{
+    const r=await apiGet(q);
+    if(!r.ok){$('histBox').textContent='查询失败';return;}
+    if(!r.rows.length){$('histBox').textContent='无记录';return;}
+    let h='<table style="width:100%;border-collapse:collapse"><tr style="color:#8e8e93"><td>电池码</td><td>Rs(mΩ)</td><td>Rct(mΩ)</td><td>时间</td></tr>';
+    for(const x of r.rows) h+='<tr><td>'+x.battery_code+'</td><td>'+(x.rs!=null?(x.rs/1000).toFixed(3):'-')+'</td><td>'+(x.rct!=null?(x.rct/1000).toFixed(3):'-')+'</td><td style="color:#8e8e93">'+(x.measured_at||'').replace('T',' ').slice(5,16)+'</td></tr>';
+    $('histBox').innerHTML=h+'</table>';
+  }catch(e){$('histBox').textContent='查询失败(离线?): '+e.message;}
 }
 function draw(hz,re,im,o){
   const c=$('nyq'),x=c.getContext('2d'),W=c.width,Hh=c.height,Lm=46,B=28,Rm=12,T=14;
@@ -378,6 +434,21 @@ function draw(hz,re,im,o){
   x.strokeStyle='#0071e3';x.lineWidth=2;x.beginPath();xs.forEach((v,i)=>i?x.lineTo(X(v),Y(ys[i])):x.moveTo(X(v),Y(ys[i])));x.stroke();
   x.fillStyle='#0071e3';xs.forEach((v,i)=>{x.beginPath();x.arc(X(v),Y(ys[i]),3,0,7);x.fill();});
 }
+// 手机号/电池码 本地记住
+['phone','bcode'].forEach(id=>{
+  const v=localStorage.getItem('jcy_'+id); if(v)$(id).value=v;
+  $(id).addEventListener('input',()=>localStorage.setItem('jcy_'+id,$(id).value));
+});
+$('btnHist').onclick=loadHistory;
+$('btnExport').onclick=async()=>{
+  const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();
+  let q='/export?1=1'; if(phone)q+='&phone='+encodeURIComponent(phone); if(bcode)q+='&code='+encodeURIComponent(bcode);
+  try{
+    const r=await fetch(API_BASE+q,{headers:{'Authorization':'Bearer '+API_TOKEN}});
+    const blob=await r.blob(); const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='battery_tests.csv'; a.click(); URL.revokeObjectURL(url);
+  }catch(e){alert('导出失败: '+e.message);}
+};
 if(!navigator.bluetooth){document.querySelector('.nav').textContent='此浏览器不支持 Web 蓝牙(用安卓 Chrome)';}
 </script>
 </body></html>
