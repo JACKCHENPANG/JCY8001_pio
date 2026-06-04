@@ -1,115 +1,133 @@
 <!DOCTYPE html><html lang="zh"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>JCY8001 阻抗谱 (蓝牙)</title>
+<title>鲸测云 · JCY8001 阻抗测试</title>
 <style>
  html,body{margin:0;padding:0;background:#f2f2f7;font-family:-apple-system,"PingFang SC",sans-serif;color:#1c1c1e}
- .nav{height:48px;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;background:#0071e3;color:#fff}
- .card{background:#fff;border-radius:14px;padding:16px;margin:14px}
- .row{display:flex;justify-content:space-between;align-items:center;padding:8px 0}
+ .nav{height:46px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;background:#0071e3;color:#fff}
+ .tabs{display:flex;background:#fff;border-bottom:1px solid #e2e2e7;position:sticky;top:0;z-index:10}
+ .tab{flex:1;text-align:center;padding:12px;font-size:15px;color:#8e8e93}
+ .tab.on{color:#0071e3;font-weight:700;border-bottom:2px solid #0071e3}
+ .card{background:#fff;border-radius:14px;padding:16px;margin:12px}
+ .row{display:flex;justify-content:space-between;align-items:center;padding:7px 0}
  .lbl{color:#8e8e93;font-size:14px}.val{font-size:16px;font-weight:600}
- .title{font-size:16px;font-weight:700}
- button{font-size:14px;border:none;border-radius:10px;padding:9px 16px;background:#0071e3;color:#fff}
+ .title{font-size:16px;font-weight:700;margin-bottom:6px}
+ button{font-size:14px;border:none;border-radius:10px;padding:10px 16px;background:#0071e3;color:#fff}
  button:disabled{background:#b0c8e8}
- .ghost{background:#eef;color:#0071e3}
- .full{width:100%;padding:14px;font-size:15px;margin-top:4px}
- .ecm{margin-top:8px;color:#cf222e;font-size:12px;line-height:1.5}
- canvas{width:100%;max-width:340px;height:250px;display:block;margin:8px auto;background:#fff}
- select{font-size:14px;padding:4px}
- .ok{color:#34c759}.bad{color:#ff3b30}
+ .ghost{background:#eef;color:#0071e3}.green{background:#34c759}
+ .full{width:100%;padding:13px;font-size:15px;margin-top:8px}
+ input,select{font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd}
+ input{width:50%}
+ canvas{width:100%;max-width:340px;display:block;margin:8px auto;background:#fff}
+ table{width:100%;border-collapse:collapse;font-size:13px}td{padding:5px 2px}
+ .ok{color:#34c759}.bad{color:#ff3b30}.warn{color:#ff9500}
 </style></head><body>
 <div class="nav">🐳 鲸测云 · JCY8001 阻抗测试</div>
+<div class="tabs"><div class="tab on" id="tabA" onclick="showTab('A')">单芯测试</div><div class="tab" id="tabB" onclick="showTab('B')">不拆包一致性</div></div>
 
+<!-- 设备(共用) -->
 <div class="card">
   <div class="row"><div class="title">设备</div><button id="btnConn">连接蓝牙</button></div>
   <div class="row"><span class="lbl">状态</span><span class="val" id="st">未连接</span></div>
   <div class="row"><span class="lbl">固件</span><span class="val" id="fw">—</span></div>
-  <div class="row"><span class="lbl">温度</span><span class="val" id="tp">—</span></div>
-  <div class="row"><span class="lbl">电压</span><span class="val" id="vt">—</span></div>
+  <div class="row"><span class="lbl">温度 / 电压</span><span class="val"><span id="tp">—</span> / <span id="vt">—</span></span></div>
 </div>
 
-<div class="card">
-  <div class="row"><span class="lbl">用户(手机号)</span><input id="phone" inputmode="numeric" maxlength="11" placeholder="11位手机号, 填一次自动记住" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:60%"></div>
-  <div class="row"><span class="lbl">电池码</span>
-    <span style="display:flex;gap:6px;width:64%;justify-content:flex-end">
-      <input id="bcode" placeholder="编号 或 扫码" style="font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;flex:1;min-width:0">
-      <button id="btnScan" class="ghost" style="padding:6px 12px">扫码</button>
-    </span>
+<!-- ====== A 单芯 ====== -->
+<div id="viewA">
+  <div class="card">
+    <div class="row"><span class="lbl">用户(手机号)</span><input id="phone" inputmode="numeric" maxlength="11" placeholder="11位, 填一次记住" style="width:58%"></div>
+    <div class="row"><span class="lbl">电池码</span>
+      <span style="display:flex;gap:6px;width:64%;justify-content:flex-end">
+        <input id="bcode" placeholder="编号 或 扫码" style="flex:1;min-width:0;width:auto">
+        <button id="btnScan" class="ghost" style="padding:6px 12px">扫码</button></span></div>
+    <div class="row"><span class="lbl">拍照</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <label class="ghost" for="photo" style="padding:7px 14px;border-radius:8px;font-size:14px">拍照/选图</label>
+        <button id="btnClrPhoto" class="ghost" style="padding:7px 10px;display:none">清除</button>
+        <input id="photo" type="file" accept="image/*" capture="environment" style="display:none"></span></div>
+    <div class="row" id="photoRow" style="display:none"><span class="lbl">照片</span><img id="thumb" style="max-width:120px;max-height:90px;border-radius:6px;border:1px solid #eee"></div>
+    <div class="row"><span class="lbl">保存</span><span class="val" id="saveSt" style="font-size:13px">测完自动存</span></div>
   </div>
-  <div class="row"><span class="lbl">拍照</span>
-    <span style="display:flex;gap:8px;align-items:center">
-      <label class="ghost" for="photo" style="padding:7px 14px;border-radius:8px;font-size:14px">拍照/选图</label>
-      <button id="btnClrPhoto" class="ghost" style="padding:7px 10px;display:none">清除</button>
-      <input id="photo" type="file" accept="image/*" capture="environment" style="display:none">
-    </span>
+  <div class="card">
+    <div class="row"><div class="title">阻抗谱</div><button id="btnSweep" disabled>开始扫频</button></div>
+    <div class="row"><span class="lbl">挡位</span>
+      <select id="range"><option value="auto">自动挡(推荐)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
+    <div class="row"><span class="lbl">扫频范围</span>
+      <select id="band"><option value="full">全扫 20点 (1kHz→0.12Hz)</option><option value="fast">快扫 12点 (1kHz→1Hz)</option></select></div>
+    <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
+    <canvas id="nyq" width="340" height="250"></canvas>
+    <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
+    <div class="row"><span class="lbl">Rs (欧姆内阻)</span><span class="val" id="rs">—</span></div>
+    <div class="row"><span class="lbl">Rct (电荷转移)</span><span class="val" id="rct">—</span></div>
+    <div class="row"><span class="lbl">拟合质量(RMS)</span><span class="val" id="rms">—</span></div>
+    <div class="ecm" id="ecm" style="color:#cf222e;font-size:12px;margin-top:4px"></div>
   </div>
-  <div class="row" id="photoRow" style="display:none"><span class="lbl">照片预览</span><img id="thumb" style="max-width:130px;max-height:98px;border-radius:6px;border:1px solid #eee"></div>
-  <div class="row"><span class="lbl">保存</span><span class="val" id="saveSt" style="font-size:13px">测完自动存</span></div>
+  <div class="card">
+    <div class="row"><div class="title">历史记录</div>
+      <span><button id="btnHist" class="ghost" style="margin-right:6px">查我的</button><button id="btnExport" class="ghost">导出CSV</button></span></div>
+    <div id="histBox" style="font-size:13px;color:#444;max-height:240px;overflow:auto"></div>
+  </div>
+</div>
+
+<!-- ====== B 不拆包一致性 ====== -->
+<div id="viewB" style="display:none">
+  <div class="card" id="cSetup">
+    <div class="title">不拆包一致性 · 设置</div>
+    <div class="row"><span class="lbl">串数 N *</span><input id="n" type="number" value="4" style="width:30%"></div>
+    <div class="row"><span class="lbl">电池规格</span><input id="spec" placeholder="可选"></div>
+    <div class="row"><span class="lbl">Rct 偏差范围 %</span><input id="tol" type="number" value="15" style="width:30%"></div>
+    <div class="row"><span class="lbl">RMS 可用阈值 %</span><input id="rmsThr" type="number" value="5" style="width:30%"></div>
+    <div class="row"><span class="lbl">扫频范围</span><select id="cband"><option value="fast">快扫 12点(快,推荐分选)</option><option value="full">全扫 20点(慢)</option></select></div>
+    <button class="full" id="btnStart" disabled>开始 (先连蓝牙)</button>
+  </div>
+  <div class="card" id="cMeasure" style="display:none">
+    <div class="title" id="mTitle">逐串测量</div>
+    <canvas id="pin" width="340" height="96"></canvas>
+    <div id="prompt" style="font-size:14px;margin:8px 0"></div>
+    <button class="full" id="btnConfirm">确认已插好, 开始测量</button>
+    <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="cProg" style="font-size:13px">—</span></div>
+    <table id="liveTbl" style="margin-top:8px"></table>
+  </div>
+  <div class="card" id="cDone" style="display:none">
+    <div class="title" id="dTitle">整包一致性</div>
+    <div id="badText" style="font-size:14px;margin-bottom:10px"></div>
+    <table id="resTbl"></table>
+    <button class="full ghost" id="btnCopy">复制报告</button>
+    <button class="full" id="btnSavePack">存服务器</button>
+    <button class="full ghost" id="btnRestart">重新开始</button>
+    <div class="row"><span class="lbl"></span><span class="val" id="packSt" style="font-size:13px"></span></div>
+  </div>
 </div>
 
 <div id="scanModal" style="display:none;position:fixed;inset:0;background:#000;z-index:99;align-items:center;justify-content:center;flex-direction:column">
   <video id="scanVid" playsinline style="width:96%;max-width:440px;border-radius:8px"></video>
-  <div style="color:#fff;margin:14px;font-size:15px">把电池条码/二维码对准框内</div>
-  <button id="scanCancel" style="padding:10px 22px">取消</button>
-</div>
-
-<div class="card">
-  <div class="row"><div class="title">阻抗谱 (自动挡)</div><button id="btnSweep" disabled>开始扫频</button></div>
-  <div class="row"><span class="lbl">内阻挡位</span>
-    <select id="range">
-      <option value="auto">自动挡 (固件自动选, 推荐)</option>
-      <option value="2">1Ω 挡 (电芯~1mΩ)</option>
-      <option value="1">5Ω 挡 (~10mΩ)</option>
-      <option value="0">10Ω 挡 (~100mΩ)</option>
-    </select>
-  </div>
-  <div class="row"><span class="lbl">点数</span>
-    <select id="mode"><option value="20">全扫 20点 (到~1.9Hz)</option><option value="12">快扫 12点 (到~13Hz)</option></select>
-  </div>
-  <canvas id="nyq" width="340" height="250"></canvas>
-  <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
-  <div class="row"><span class="lbl">Rs (欧姆内阻)</span><span class="val" id="rs">—</span></div>
-  <div class="row"><span class="lbl">Rct (电荷转移)</span><span class="val" id="rct">—</span></div>
-  <div class="ecm" id="ecm"></div>
-  <div class="row"><span class="lbl">进度</span><span class="val" id="prog">—</span></div>
-</div>
-
-<div class="card">
-  <div class="row"><div class="title">历史记录</div>
-    <span><button id="btnHist" class="ghost" style="margin-right:6px">查我的</button><button id="btnExport" class="ghost">导出CSV</button></span>
-  </div>
-  <div id="histBox" style="font-size:13px;color:#444;max-height:240px;overflow:auto"></div>
-</div>
-
-<div class="card">
-  <button class="full" style="background:#34c759" onclick="location.href='/battery-test/consistency.html'">不拆包测一致性 (整包逐串) ›</button>
+  <div style="color:#fff;margin:14px">对准电池条码/二维码</div><button id="scanCancel" style="padding:10px 22px">取消</button>
 </div>
 
 <div class="card" style="font-size:12px;color:#8e8e93;text-align:center">
- <div style="font-weight:600;color:#1c1c1e">鲸测云科技 · JCY8001 电池阻抗测试系统</div>
- <div style="margin:4px 0">版本 <span id="ver"></span> · www.jcytest.com</div>
- <div style="margin-top:6px">安卓 Chrome 打开 · 连 JDY-10 蓝牙(FFE0/FFE1) · 数据按手机号分存 · 不依赖微信/无需备案</div>
- <div style="margin-top:4px;color:#c8c8cc">© 2026 鲸测云科技</div>
+ 鲸测云科技 · JCY8001 电池阻抗测试 · 版本 <span id="ver"></span> · www.jcytest.com
 </div>
 
 <script>
 'use strict';
-// ============== Modbus (内联自 miniprogram/utils/modbus.js) ==============
+const APP_VERSION='v1.1.0 (2026-06-04)';
+const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
+// ===== Modbus =====
 const SID=0x01;
-function crc16(b,len){len=(len===undefined)?b.length:len;let c=0xFFFF;for(let i=0;i<len;i++){c^=b[i];for(let k=0;k<8;k++)c=(c&1)?((c>>1)^0xA001):(c>>1);}return c&0xFFFF;}
-function withCrc(a){const c=crc16(a,a.length);return new Uint8Array(a.concat([c&0xFF,(c>>8)&0xFF]));}
-function readHolding(r,n){return withCrc([SID,3,(r>>8)&0xFF,r&0xFF,(n>>8)&0xFF,n&0xFF]);}
-function writeReg(r,v){return withCrc([SID,6,(r>>8)&0xFF,r&0xFF,(v>>8)&0xFF,v&0xFF]);}
-function writeCoil(a,on){return withCrc([SID,5,(a>>8)&0xFF,a&0xFF,on?0xFF:0,0]);}
-function parseRead(buf){if(!buf||buf.length<5)return{ok:false};if(buf[0]!==SID)return{ok:false};if(buf[1]&0x80)return{ok:false};const nb=buf[2];if(buf.length<3+nb+2)return{ok:false};if(crc16(buf,3+nb)!==(buf[3+nb]|(buf[3+nb+1]<<8)))return{ok:false};const regs=[];for(let i=0;i<nb;i+=2)regs.push((buf[3+i]<<8)|buf[3+i+1]);return{ok:true,regs};}
-function regs64ToUOhm(regs,off){off=off||0;let v=0n;for(let i=0;i<4;i++)v=(v<<16n)|BigInt(regs[off+i]&0xFFFF);if(v>>63n)v-=(1n<<64n);return Number(v)/100000.0;}
-const REG={TEMP:0x3300,VOLT:0x3340,STATUS:0x3380,CH_COUNT:0x3E00,FW_VER:0x3E02,SAMP_RES:0x40C0,ZM_GAIN:0x4280,AVG:0x4040,ZM_FAST:0x4340,ZM_MODE:0x4300,SWEEP_TABLE:0x4400,SWEEP_COUNT:0x43C0,SWEEP_STATE:0x3E40,SWEEP_DONE:0x3E41,SWEEP_RE:0x3400,SWEEP_IM:0x3500,SWEEP_FREQ:0x3640};
-const COIL={SWEEP_TRIG:0x00C0};
-const DEFAULT_CODES=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070E,0x0806,0x070A,0x0902,0x0706,0x0802,0x0702,0x0602,0x0502,0x0402,0x0302];
-const _F=125000/(2**24);
-function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
-
-// ============== 分析 (内联自 miniprogram/utils/analysis.js, 含 L补偿/Kasa圆/ECM) ==============
+function crc16(b){let c=0xFFFF;for(let i=0;i<b.length;i++){c^=b[i];for(let k=0;k<8;k++)c=(c&1)?((c>>1)^0xA001):(c>>1);}return c&0xFFFF;}
+function withCrc(a){const c=crc16(a);return new Uint8Array(a.concat([c&0xFF,(c>>8)&0xFF]));}
+function f03(r,n){return withCrc([SID,3,(r>>8)&0xFF,r&0xFF,(n>>8)&0xFF,n&0xFF]);}
+function f06(r,v){return withCrc([SID,6,(r>>8)&0xFF,r&0xFF,(v>>8)&0xFF,v&0xFF]);}
+function f05(a,on){return withCrc([SID,5,(a>>8)&0xFF,a&0xFF,on?0xFF:0,0]);}
+function parseRead(b){if(!b||b.length<5||b[0]!==SID||(b[1]&0x80))return null;const nb=b[2];if(b.length<5+nb-2)return null;const regs=[];for(let i=0;i<nb;i+=2)regs.push((b[3+i]<<8)|b[3+i+1]);return regs;}
+function regs64(r){let v=0n;for(let i=0;i<4;i++)v=(v<<16n)|BigInt(r[i]&0xFFFF);if(v>>63n)v-=(1n<<64n);return Number(v)/100000.0;}
+const REG={TEMP:0x3300,VOLT:0x3340,FW:0x3E02,SAMP:0x40C0,GAIN:0x4280,AVG:0x4040,FAST:0x4340,MODE:0x4300,AUTOR:0x4380,TBL:0x4400,NPTS:0x43C0,STATE:0x3E40,DONE:0x3E41,RE:0x3400,IM:0x3500};
+const FULL=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070E,0x0806,0x070A,0x0902,0x0706,0x0802,0x0702,0x0602,0x0502,0x0402,0x0302];
+const FAST_IDX=[0,2,4,5,6,8,10,12,14,16,18,19];           // 展开12点(高频→~1Hz), 修复快扫无结果
+const FAST=FAST_IDX.map(i=>FULL[i]);
+const _F=125000/(2**24);function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
+// ===== 分析(注入) =====
 // EIS 分析 (微信小程序 / Node 通用纯 JS)
 // 移植自 tools/eis_nyquist.py + tools/eis_ecm.py。
 // 约定: re/im 单位 μΩ, im 已是 -Z'' (Z = re + j*(-im))。
@@ -324,215 +342,172 @@ if (typeof module !== 'undefined' && module.exports) module.exports = API;   // 
 // 小程序: const A = require('../../utils/analysis.js')
 
 const A = API;
-
-// ============== Web Bluetooth 传输层 (替 wx.* ble.js) ==============
-const SVC=0xffe0, CHR=0xffe1;
-let gChar=null, rxBuf=[];
-function onNotify(e){const dv=e.target.value;for(let i=0;i<dv.byteLength;i++)rxBuf.push(dv.getUint8(i));}
-async function bleConnect(){
-  const dev=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'JDY'}],optionalServices:[SVC]});
-  const srv=await dev.gatt.connect();
-  const s=await srv.getPrimaryService(SVC);
-  gChar=await s.getCharacteristic(CHR);
-  await gChar.startNotifications();
-  gChar.addEventListener('characteristicvaluechanged',onNotify);
-  dev.addEventListener('gattserverdisconnected',()=>{gChar=null;setStatus('已断开',false);});
-  return dev;
-}
+// ===== BLE =====
+const SVC=0xffe0,CHR=0xffe1;let gChar=null,rxBuf=[];
+function onN(e){const d=e.target.value;for(let i=0;i<d.byteLength;i++)rxBuf.push(d.getUint8(i));}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-async function txn(frame,respLen,timeout){
-  timeout=timeout||3000;
-  for(let attempt=0;attempt<2;attempt++){
-    rxBuf=[];
-    await gChar.writeValueWithoutResponse(frame.buffer?frame:new Uint8Array(frame));
-    const t0=Date.now();
-    while(rxBuf.length<respLen && Date.now()-t0<timeout) await sleep(40);
-    if(rxBuf.length>=respLen) return new Uint8Array(rxBuf);
-    await sleep(150);
+async function bleConnect(){
+  const d=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'JDY'}],optionalServices:[SVC]});
+  const s=await(await d.gatt.connect()).getPrimaryService(SVC);
+  gChar=await s.getCharacteristic(CHR);await gChar.startNotifications();
+  gChar.addEventListener('characteristicvaluechanged',onN);
+  d.addEventListener('gattserverdisconnected',()=>{gChar=null;setSt('已断开',false);$('btnSweep').disabled=true;$('btnStart').disabled=true;});
+}
+async function txn(fr,rl,to){to=to||4000;for(let a=0;a<2;a++){rxBuf=[];await gChar.writeValueWithoutResponse(fr);const t=Date.now();while(rxBuf.length<rl&&Date.now()-t<to)await sleep(40);if(rxBuf.length>=rl)break;await sleep(150);}return new Uint8Array(rxBuf);}
+async function rd(r,n){const x=parseRead(await txn(f03(r,n),5+2*n));if(!x)throw new Error('rd0x'+r.toString(16));return x;}
+async function i64(r){return regs64(await rd(r,4));}
+async function w06(r,v){await txn(f06(r,v),8);}
+async function coil(on){await txn(f05(0x00C0,on),8);}
+// 通用扫频: codes + {auto,samp,onPoint,onTick} -> {hz,re,im,gear}
+async function sweepCore(codes,opts){
+  opts=opts||{};const N=codes.length;
+  if(opts.auto){await w06(REG.AUTOR,1);}else{await w06(REG.AUTOR,0);await w06(REG.SAMP,opts.samp);}
+  await w06(REG.GAIN,1);await w06(REG.AVG,opts.avg||1);await w06(REG.FAST,1);await w06(REG.MODE,0);
+  for(let i=0;i<N;i++)await w06(REG.TBL+i,codes[i]);     // 逐寄存器写避BLE分帧
+  await w06(REG.NPTS,N);await coil(false);await sleep(150);await coil(true);
+  const hz=[],re=[],im=[];let done=0,fails=0;const t0=Date.now();
+  const tick=opts.onTick?setInterval(()=>opts.onTick((Date.now()-t0)/1000),500):null;
+  while(Date.now()-t0<360000){
+    try{
+      const comp=Math.min((await rd(REG.DONE,1))[0],N);
+      while(done<comp){const rr=await i64(REG.RE+done*4),ii=await i64(REG.IM+done*4);hz.push(codeToHz(codes[done]));re.push(rr);im.push(ii);done++;if(opts.onPoint)opts.onPoint(done,N);}
+      const st=(await rd(REG.STATE,1))[0];fails=0;
+      if(st===2){const c2=Math.min((await rd(REG.DONE,1))[0],N);while(done<c2){const rr=await i64(REG.RE+done*4),ii=await i64(REG.IM+done*4);hz.push(codeToHz(codes[done]));re.push(rr);im.push(ii);done++;}break;}
+      if(st===3)break;
+    }catch(e){fails++;await sleep(600);if(fails>60)break;continue;}
+    await sleep(350);
   }
-  return new Uint8Array(rxBuf);
+  if(tick)clearInterval(tick);
+  try{await coil(false);}catch(e){}
+  let gear=null;if(opts.auto){try{const s=(await rd(REG.SAMP,1))[0];gear={sel:s,R:[10,5,1][s]||10};}catch(e){}}
+  return {hz,re,im,gear,elapsed:(Date.now()-t0)/1000};
 }
-async function rd(reg,cnt){const r=await txn(readHolding(reg,cnt),5+2*cnt);const p=parseRead(r);if(!p.ok)throw new Error('read 0x'+reg.toString(16));return p.regs;}
-async function rdI64(reg){const regs=await rd(reg,4);return regs64ToUOhm(regs,0);}
-async function w06(reg,val){await txn(writeReg(reg,val),8);}
-async function coil(a,on){await txn(writeCoil(a,on),8);}
-
-// ============== 数据后端 ==============
-const APP_VERSION='v1.0.0 (2026-06-04)';   // 改版本号在这里
-const API_BASE='/battery-api';   // 同域反代; GitHub Pages 上无此接口(仅演示)
-const API_TOKEN='jcy8001-prod-7f3a2c9b5e';
-let gTemp=null,gVolt=null,gLast=null,gPhoto=null;
-async function apiPost(path,body){
-  const r=await fetch(API_BASE+path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+API_TOKEN},body:JSON.stringify(body)});
-  return r.json();
-}
-async function apiGet(path){
-  const r=await fetch(API_BASE+path,{headers:{'Authorization':'Bearer '+API_TOKEN}});
-  return r.json();
-}
-// ============== UI ==============
+function clean(s){const H=[],R=[],I=[];for(let k=0;k<s.hz.length;k++)if(s.re[k]>0){H.push(s.hz[k]);R.push(s.re[k]);I.push(s.im[k]);}return {H,R,I};}
+// ===== UI 通用 =====
 const $=id=>document.getElementById(id);
-function setStatus(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
-$('btnConn').onclick=async()=>{
-  try{
-    setStatus('连接中...',false);
-    await bleConnect();
-    setStatus('已连接 (BLE)',true);
-    const fw=(await rd(REG.FW_VER,1))[0];
-    $('fw').textContent='v'+((fw>>8)&0xFF).toString(16)+'.'+String(fw&0xFF).padStart(2,'0');
-    gTemp=(await rd(REG.TEMP,1))[0]/10; $('tp').textContent=gTemp.toFixed(1)+' °C';
-    gVolt=(await rd(REG.VOLT,1))[0]/10000; $('vt').textContent=gVolt.toFixed(4)+' V';
-    $('btnSweep').disabled=false; $('btnConn').textContent='已连接';
-  }catch(e){setStatus('连接失败: '+e.message,false);}
-};
+function setSt(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
+function showTab(t){$('tabA').className='tab'+(t==='A'?' on':'');$('tabB').className='tab'+(t==='B'?' on':'');$('viewA').style.display=t==='A'?'block':'none';$('viewB').style.display=t==='B'?'block':'none';}
+let gTemp=null,gVolt=null,gLast=null,gPhoto=null;
+$('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect();setSt('已连接(BLE)',true);
+  const fw=(await rd(REG.FW,1))[0];$('fw').textContent='v'+((fw>>8)&0xFF).toString(16)+'.'+String(fw&0xFF).padStart(2,'0');
+  gTemp=(await rd(REG.TEMP,1))[0]/10;$('tp').textContent=gTemp.toFixed(1)+'℃';
+  gVolt=(await rd(REG.VOLT,1))[0]/10000;$('vt').textContent=gVolt.toFixed(4)+'V';
+  $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';
+ }catch(e){setSt('连接失败:'+e.message,false);}};
+// ===== A 单芯 =====
 $('btnSweep').onclick=async()=>{
-  const N=parseInt($('mode').value); $('btnSweep').disabled=true; $('ecm').textContent='';
+  $('btnSweep').disabled=true;$('ecm').textContent='';['L','rs','rct','rms'].forEach(i=>$(i).textContent='测量中...');
   try{
-    const sel=$('range').value; localStorage.setItem('jcy_range',sel);
-    if(sel==='auto'){ await w06(REG.AUTORANGE,1); }            // 固件自动挡: 扫前自己探点定档
-    else { await w06(REG.AUTORANGE,0); await w06(REG.SAMP_RES,parseInt(sel)); }
-    await w06(REG.ZM_GAIN,1); await w06(REG.AVG,4);
-    await w06(REG.ZM_FAST,0); await w06(REG.ZM_MODE,0);
-    for(let i=0;i<N;i++) await w06(REG.SWEEP_TABLE+i,DEFAULT_CODES[i]); // 逐寄存器写避BLE分帧
-    await w06(REG.SWEEP_COUNT,N);
-    await coil(COIL.SWEEP_TRIG,true);
-    const hz=[],re=[],im=[]; let done=0,fails=0; const t0=Date.now();
-    async function grab(i){const rr=await rdI64(REG.SWEEP_RE+i*4),ii=await rdI64(REG.SWEEP_IM+i*4);const cd=(await rd(REG.SWEEP_FREQ+i,1))[0];const f=cd?codeToHz(cd):codeToHz(DEFAULT_CODES[i]);hz.push(f);re.push(rr);im.push(ii);}
-    while(Date.now()-t0<320000){
-      try{
-        const comp=Math.min((await rd(REG.SWEEP_DONE,1))[0],N);
-        while(done<comp){await grab(done);done++;$('prog').textContent=done+' / '+N;draw(hz,re,im);}
-        const st=(await rd(REG.SWEEP_STATE,1))[0]; fails=0;
-        if(st===2){const c2=Math.min((await rd(REG.SWEEP_DONE,1))[0],N);while(done<c2){await grab(done);done++;}break;}
-        if(st===3){$('prog').textContent='设备中止';break;}
-      }catch(e){fails++;await sleep(600);if(fails>40)break;continue;}
-      await sleep(400);
-    }
-    try{await coil(COIL.SWEEP_TRIG,false);}catch(e){}
-    finishAnalyze(hz,re,im);
-  }catch(e){$('ecm').textContent='扫频出错: '+e.message;}
+    const sel=$('range').value;localStorage.setItem('jcy_range',sel);localStorage.setItem('jcy_band',$('band').value);
+    const codes=$('band').value==='fast'?FAST:FULL;
+    const opts={onPoint:(i,n)=>$('prog').textContent='点 '+i+'/'+n,onTick:(s)=>$('prog').dataset.t=s.toFixed(0)};
+    if(sel==='auto')opts.auto=true;else{opts.auto=false;opts.samp=parseInt(sel);}
+    const t0=Date.now();const s=await sweepCore(codes,opts);
+    const el=((Date.now()-t0)/1000).toFixed(0);
+    const {H,R,I}=clean(s);
+    if(H.length<4){$('prog').textContent='有效点不足('+H.length+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
+    const o=A.analyze(H,R,I);const e=H.length>=6?A.ecmFit(H,R,I):null;
+    $('L').textContent=o.L_nH!=null?o.L_nH.toFixed(0)+' nH':'—';
+    $('rs').textContent=o.Rs!=null?(o.Rs/1000).toFixed(3)+' mΩ':'—';
+    $('rct').textContent=o.Rct!=null?(o.Rct/1000).toFixed(3)+' mΩ':(e?(e.Rct_uOhm/1000).toFixed(3)+' mΩ(ECM)':'—');
+    const rms=e?e.rms:null;
+    $('rms').innerHTML=rms!=null?('<span class="'+(rms<5?'ok':rms<10?'warn':'bad')+'">'+rms.toFixed(2)+'%'+(rms<5?' 良':rms<10?' 一般':' 差,建议重测')+'</span>'):'—';
+    if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
+    $('prog').textContent='完成 '+H.length+'点, 用时'+el+'s';
+    draw('nyq',H,R,I,o);
+    gLast={hz:H,re:R,im:I,o:o,ecm:e};saveRecord();
+  }catch(err){$('ecm').textContent='出错: '+err.message;}
   $('btnSweep').disabled=false;
 };
-function finishAnalyze(hz,re,im){
-  // 剔掉掉点(re<=0)再分析
-  const H=[],R=[],I=[];for(let k=0;k<hz.length;k++)if(re[k]>0){H.push(hz[k]);R.push(re[k]);I.push(im[k]);}
-  if(H.length<4){$('prog').textContent='有效点不足 '+H.length;return;}
-  const o=A.analyze(H,R,I); const ecm=A.ecmFit(H,R,I);
-  $('L').textContent=o.L_nH!=null?o.L_nH.toFixed(0)+' nH':'—';
-  $('rs').textContent=o.Rs!=null?(o.Rs/1000).toFixed(3)+' mΩ':'—';
-  $('rct').textContent=o.Rct!=null?(o.Rct/1000).toFixed(3)+' mΩ':'—';
-  if(ecm)$('ecm').textContent='ECM: Rs='+(ecm.Rs_uOhm/1000).toFixed(3)+' Rct='+(ecm.Rct_uOhm/1000).toFixed(3)+' mΩ · n='+ecm.n.toFixed(2)+' · RMS '+ecm.rms.toFixed(2)+'%';
-  draw(H,R,I,o);
-  $('prog').textContent='完成 ('+H.length+'点)';
-  gLast={hz:H,re:R,im:I,o:o,ecm:ecm};
-  saveRecord();
-}
+async function apiPost(p,b){return (await fetch(API_BASE+p,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+API_TOKEN},body:JSON.stringify(b)})).json();}
+async function apiGet(p){return (await fetch(API_BASE+p,{headers:{'Authorization':'Bearer '+API_TOKEN}})).json();}
 async function saveRecord(){
-  if(!gLast){return;}
-  const phone=($('phone').value||'').trim(), bcode=($('bcode').value||'').trim();
-  if(!/^\d{11}$/.test(phone)){$('saveSt').textContent='⚠ 手机号需11位数字, 未保存';$('phone').style.borderBottom='1px solid #ff3b30';return;}
-  $('phone').style.borderBottom='1px solid #ddd';
-  if(!bcode){$('saveSt').textContent='⚠ 未填电池码, 未保存';$('bcode').style.borderBottom='1px solid #ff3b30';return;}
-  $('bcode').style.borderBottom='1px solid #ddd';
+  if(!gLast)return;const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();
+  if(!/^\d{11}$/.test(phone)){$('saveSt').textContent='⚠手机号需11位,未存';$('phone').style.borderBottom='1px solid #ff3b30';return;}$('phone').style.borderBottom='1px solid #ddd';
+  if(!bcode){$('saveSt').textContent='⚠未填电池码,未存';return;}
   $('saveSt').textContent='保存中...';
-  try{
-    const o=gLast.o, ecm=gLast.ecm;
-    const body={user_phone:phone,battery_code:bcode,
-      spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},
-      rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,
-      ecm:ecm?{rs:ecm.Rs_uOhm,rct:ecm.Rct_uOhm,n:ecm.n,rms:ecm.rms}:null,
-      temp:gTemp,volt:gVolt,device_id:'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()};
-    const r=await apiPost('/save',body);
-    if(r.ok){$('saveSt').textContent='已存 #'+r.id+(gPhoto?' 📷':'');clearPhoto();}
-    else $('saveSt').textContent='存失败: '+(r.err||'?');
-  }catch(e){$('saveSt').textContent='存失败(离线?): '+e.message;}
+  try{const o=gLast.o,e=gLast.ecm;
+    const r=await apiPost('/save',{user_phone:phone,battery_code:bcode,spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,ecm:e?{rs:e.Rs_uOhm,rct:e.Rct_uOhm,n:e.n,rms:e.rms}:null,temp:gTemp,volt:gVolt,device_id:'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()});
+    if(r.ok){$('saveSt').textContent='已存 #'+r.id+(gPhoto?' 📷':'');clearPhoto();}else $('saveSt').textContent='存失败:'+(r.err||'?');
+  }catch(e){$('saveSt').textContent='存失败(离线?):'+e.message;}
 }
-async function loadHistory(){
-  const phone=($('phone').value||'').trim(), bcode=($('bcode').value||'').trim();
-  let q='/list?limit=50'; if(phone)q+='&phone='+encodeURIComponent(phone); if(bcode)q+='&code='+encodeURIComponent(bcode);
+async function loadHistory(){const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();
+  let q='/list?limit=50';if(phone)q+='&phone='+encodeURIComponent(phone);if(bcode)q+='&code='+encodeURIComponent(bcode);
   $('histBox').textContent='查询中...';
-  try{
-    const r=await apiGet(q);
-    if(!r.ok){$('histBox').textContent='查询失败';return;}
-    if(!r.rows.length){$('histBox').textContent='无记录';return;}
-    let h='<table style="width:100%;border-collapse:collapse"><tr style="color:#8e8e93"><td>电池码</td><td>Rs</td><td>Rct</td><td>时间</td><td>图</td></tr>';
-    for(const x of r.rows){const pic=x.photo_path?'<a href="/battery-photos/'+x.photo_path+'" target="_blank">📷</a>':'';
-      h+='<tr><td>'+x.battery_code+'</td><td>'+(x.rs!=null?(x.rs/1000).toFixed(3):'-')+'</td><td>'+(x.rct!=null?(x.rct/1000).toFixed(3):'-')+'</td><td style="color:#8e8e93">'+(x.measured_at||'').replace('T',' ').slice(5,16)+'</td><td>'+pic+'</td></tr>';}
-    $('histBox').innerHTML=h+'</table>';
-  }catch(e){$('histBox').textContent='查询失败(离线?): '+e.message;}
-}
-function draw(hz,re,im,o){
-  const c=$('nyq'),x=c.getContext('2d'),W=c.width,Hh=c.height,Lm=46,B=28,Rm=12,T=14;
-  let imc=o?o.imc:im.map((v,k)=>v); // 未分析时直接画原始(含感性尾)
-  const xs=re.map(v=>v/1000),ys=imc.map(v=>v/1000);
+  try{const r=await apiGet(q);if(!r.ok){$('histBox').textContent='查询失败';return;}if(!r.rows.length){$('histBox').textContent='无记录';return;}
+    let h='<tr style="color:#8e8e93"><td>电池码</td><td>Rs</td><td>Rct</td><td>时间</td><td>图</td></tr>';
+    for(const x of r.rows){const pic=x.photo_path?'<a href="/battery-photos/'+x.photo_path+'" target="_blank">📷</a>':'';h+='<tr><td>'+x.battery_code+'</td><td>'+(x.rs!=null?(x.rs/1000).toFixed(3):'-')+'</td><td>'+(x.rct!=null?(x.rct/1000).toFixed(3):'-')+'</td><td style="color:#8e8e93">'+(x.measured_at||'').replace('T',' ').slice(5,16)+'</td><td>'+pic+'</td></tr>';}
+    $('histBox').innerHTML='<table>'+h+'</table>';
+  }catch(e){$('histBox').textContent='查询失败:'+e.message;}}
+$('btnHist').onclick=loadHistory;
+$('btnExport').onclick=async()=>{const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();let q='/export?1=1';if(phone)q+='&phone='+encodeURIComponent(phone);if(bcode)q+='&code='+encodeURIComponent(bcode);
+  try{const r=await fetch(API_BASE+q,{headers:{'Authorization':'Bearer '+API_TOKEN}});const b=await r.blob();const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='battery_tests.csv';a.click();URL.revokeObjectURL(u);}catch(e){alert('导出失败:'+e.message);}};
+// 拍照/扫码
+function clearPhoto(){gPhoto=null;$('photoRow').style.display='none';$('btnClrPhoto').style.display='none';$('photo').value='';}
+$('photo').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const img=new Image(),url=URL.createObjectURL(f);img.onload=()=>{URL.revokeObjectURL(url);let w=img.width,hh=img.height;const M=1000;if(w>M||hh>M){const s=M/Math.max(w,hh);w=Math.round(w*s);hh=Math.round(hh*s);}const cv=document.createElement('canvas');cv.width=w;cv.height=hh;cv.getContext('2d').drawImage(img,0,0,w,hh);gPhoto=cv.toDataURL('image/jpeg',0.7);$('thumb').src=gPhoto;$('photoRow').style.display='flex';$('btnClrPhoto').style.display='inline-block';};img.src=url;});
+$('btnClrPhoto').onclick=clearPhoto;
+let scanStream=null,scanRun=false;
+$('btnScan').onclick=async()=>{if(!('BarcodeDetector'in window)){alert('此浏览器不支持扫码(用新版安卓Chrome),请手动输入');return;}
+  try{const det=new BarcodeDetector();scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});const v=$('scanVid');v.srcObject=scanStream;await v.play();$('scanModal').style.display='flex';scanRun=true;
+    const loop=async()=>{if(!scanRun)return;try{const cs=await det.detect(v);if(cs&&cs.length){$('bcode').value=cs[0].rawValue;localStorage.setItem('jcy_bcode',cs[0].rawValue);stopScan();return;}}catch(e){}requestAnimationFrame(loop);};loop();
+  }catch(e){alert('打不开摄像头:'+e.message);stopScan();}};
+function stopScan(){scanRun=false;$('scanModal').style.display='none';if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}}
+$('scanCancel').onclick=stopScan;
+// 画 Nyquist
+function draw(cid,hz,re,im,o){const c=$(cid),x=c.getContext('2d'),W=c.width,Hh=c.height,Lm=46,B=28,Rm=12,T=14;
+  const imc=o?o.imc:im;const xs=re.map(v=>v/1000),ys=imc.map(v=>v/1000);
   let xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(0,...ys),ymax=Math.max(...ys);
   const px=(xmax-xmin)*0.1+1e-6,py=(ymax-ymin)*0.15+1e-6;xmin-=px;xmax+=px;ymin-=py;ymax+=py;
   const X=v=>Lm+(v-xmin)/(xmax-xmin)*(W-Lm-Rm),Y=v=>Hh-B-(v-ymin)/(ymax-ymin)*(Hh-B-T);
-  x.fillStyle='#fff';x.fillRect(0,0,W,Hh);
-  x.strokeStyle='#ddd';x.beginPath();x.moveTo(Lm,T);x.lineTo(Lm,Hh-B);x.lineTo(W-Rm,Hh-B);x.stroke();
+  x.fillStyle='#fff';x.fillRect(0,0,W,Hh);x.strokeStyle='#ddd';x.beginPath();x.moveTo(Lm,T);x.lineTo(Lm,Hh-B);x.lineTo(W-Rm,Hh-B);x.stroke();
   x.strokeStyle='#eee';x.beginPath();x.moveTo(Lm,Y(0));x.lineTo(W-Rm,Y(0));x.stroke();
-  x.fillStyle='#8e8e93';x.font='10px sans-serif';x.fillText("Z' mΩ",W-46,Hh-9);
-  x.save();x.translate(12,Hh/2);x.rotate(-Math.PI/2);x.fillText("-Z'' mΩ",0,0);x.restore();
+  x.fillStyle='#8e8e93';x.font='10px sans-serif';x.fillText("Z' mΩ",W-46,Hh-9);x.save();x.translate(12,Hh/2);x.rotate(-Math.PI/2);x.fillText("-Z'' mΩ",0,0);x.restore();
   if(o&&o.circle){const cc=o.circle;x.strokeStyle='#ff3b30';x.setLineDash([4,3]);x.beginPath();for(let a=0;a<=2*Math.PI;a+=0.05){const cx=(cc.xc+cc.R*Math.cos(a))/1000,cy=(cc.yc+cc.R*Math.sin(a))/1000;a?x.lineTo(X(cx),Y(cy)):x.moveTo(X(cx),Y(cy));}x.stroke();x.setLineDash([]);}
   x.strokeStyle='#0071e3';x.lineWidth=2;x.beginPath();xs.forEach((v,i)=>i?x.lineTo(X(v),Y(ys[i])):x.moveTo(X(v),Y(ys[i])));x.stroke();
-  x.fillStyle='#0071e3';xs.forEach((v,i)=>{x.beginPath();x.arc(X(v),Y(ys[i]),3,0,7);x.fill();});
-}
-// 手机号/电池码 本地记住
-['phone','bcode'].forEach(id=>{
-  const v=localStorage.getItem('jcy_'+id); if(v)$(id).value=v;
-  $(id).addEventListener('input',()=>localStorage.setItem('jcy_'+id,$(id).value));
-});
-{const rv=localStorage.getItem('jcy_range'); if(rv)$('range').value=rv;
- $('range').addEventListener('change',()=>localStorage.setItem('jcy_range',$('range').value));}
-$('btnHist').onclick=loadHistory;
-$('btnExport').onclick=async()=>{
-  const phone=($('phone').value||'').trim(),bcode=($('bcode').value||'').trim();
-  let q='/export?1=1'; if(phone)q+='&phone='+encodeURIComponent(phone); if(bcode)q+='&code='+encodeURIComponent(bcode);
+  x.fillStyle='#0071e3';xs.forEach((v,i)=>{x.beginPath();x.arc(X(v),Y(ys[i]),3,0,7);x.fill();});}
+// ===== B 一致性 =====
+let results=[],lockedGear=null,N=4,tol=15,rmsThr=5,idx=1;
+$('btnStart').onclick=()=>{if(!gChar){alert('请先连蓝牙');return;}
+  N=Math.max(1,parseInt($('n').value)||1);tol=parseFloat($('tol').value)||15;rmsThr=parseFloat($('rmsThr').value)||5;
+  results=[];lockedGear=null;idx=1;$('cSetup').style.display='none';$('cDone').style.display='none';$('cMeasure').style.display='block';$('liveTbl').innerHTML='';showCell(1);};
+function showCell(k){idx=k;$('mTitle').textContent='逐串测量 ('+k+'/'+N+')';$('prompt').innerHTML='第 <b>'+k+'/'+N+'</b> 串：探针插 <b style="color:#cf222e">B'+(k-1)+'(+)</b> 和 <b style="color:#0071e3">B'+k+'(−)</b>';drawPin(N,k);$('cProg').textContent='—';}
+function drawPin(n,active){const c=$('pin'),x=c.getContext('2d'),W=c.width,H=c.height,m=24,np=n+1;x.fillStyle='#fff';x.fillRect(0,0,W,H);const step=(W-2*m)/Math.max(np-1,1),cy=42,r=Math.min(13,step*0.32);for(let i=0;i<np;i++){const cx=m+i*step,isP=(i===active-1),isM=(i===active);x.beginPath();x.fillStyle=isP?'#cf222e':isM?'#0071e3':'#c8c8cc';x.arc(cx,cy,r,0,7);x.fill();x.fillStyle='#333';x.font='10px sans-serif';x.fillText('B'+i,cx-7,cy+r+14);if(isP||isM){x.fillStyle='#fff';x.font='bold 14px sans-serif';x.fillText(isP?'+':'−',cx-4,cy+5);}}}
+function liveRow(r,bad){return '<tr style="'+(bad?'background:#ffeceb':'')+'"><td>'+r.k+'</td><td>'+(r.Rs/1000).toFixed(3)+'</td><td>'+(r.Rct/1000).toFixed(3)+'</td><td>'+r.rms.toFixed(1)+'%</td></tr>';}
+$('btnConfirm').onclick=async()=>{
+  if(!gChar){alert('未连接');return;}$('btnConfirm').disabled=true;
+  const first=(lockedGear==null);$('cProg').textContent=first?'自动选档...':('锁档'+lockedGear.R+'Ω');
   try{
-    const r=await fetch(API_BASE+q,{headers:{'Authorization':'Bearer '+API_TOKEN}});
-    const blob=await r.blob(); const url=URL.createObjectURL(blob);
-    const a=document.createElement('a'); a.href=url; a.download='battery_tests.csv'; a.click(); URL.revokeObjectURL(url);
-  }catch(e){alert('导出失败: '+e.message);}
+    const codes=$('cband').value==='full'?FULL:FAST;
+    const opts={avg:1,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n,onTick:(s)=>{const m=$('cProg').textContent;$('cProg').textContent=(m.indexOf('测点')>=0?m.split(' · ')[0]:m)+' · '+s.toFixed(0)+'s';}};
+    if(first)opts.auto=true;else{opts.auto=false;opts.samp=lockedGear.sel;}
+    const s=await sweepCore(codes,opts);if(first&&s.gear)lockedGear=s.gear;
+    const {H,R,I}=clean(s);const e=H.length>=6?A.ecmFit(H,R,I):null;
+    if(!e){$('btnConfirm').disabled=false;alert('第'+idx+'串: 拟合失败/点不足('+H.length+'点), 检查正负/接触, 重测');return;}
+    if(e.rms>rmsThr){$('btnConfirm').disabled=false;alert('第'+idx+'串: RMS='+e.rms.toFixed(1)+'%>'+rmsThr+'%, 接触不良, 重插重测');return;}
+    const rec={k:idx,Rs:e.Rs_uOhm,Rct:e.Rct_uOhm,rms:e.rms};results.push(rec);
+    // 边测边显
+    if(!$('liveTbl').innerHTML)$('liveTbl').innerHTML='<tr style="color:#8e8e93"><td>串</td><td>Rs(mΩ)</td><td>Rct(mΩ)</td><td>RMS</td></tr>';
+    $('liveTbl').innerHTML+=liveRow(rec,false);
+    $('btnConfirm').disabled=false;
+    if(idx+1<=N)showCell(idx+1);else finish();
+  }catch(err){$('btnConfirm').disabled=false;alert('第'+idx+'串出错:'+(err.message||err)+', 重测');}
 };
-// 拍照 -> 压缩成 jpeg base64
-function clearPhoto(){gPhoto=null;$('photoRow').style.display='none';$('btnClrPhoto').style.display='none';$('photo').value='';}
-$('photo').addEventListener('change',e=>{
-  const f=e.target.files[0]; if(!f)return;
-  const img=new Image(); const url=URL.createObjectURL(f);
-  img.onload=()=>{
-    URL.revokeObjectURL(url);
-    let w=img.width,hh=img.height; const MAX=1000;
-    if(w>MAX||hh>MAX){const s=MAX/Math.max(w,hh);w=Math.round(w*s);hh=Math.round(hh*s);}
-    const cv=document.createElement('canvas');cv.width=w;cv.height=hh;
-    cv.getContext('2d').drawImage(img,0,0,w,hh);
-    gPhoto=cv.toDataURL('image/jpeg',0.7);
-    $('thumb').src=gPhoto;$('photoRow').style.display='flex';$('btnClrPhoto').style.display='inline-block';
-  };
-  img.src=url;
-});
-$('btnClrPhoto').onclick=clearPhoto;
-
-// 扫码 -> 填电池码 (BarcodeDetector, 安卓Chrome原生)
-let scanStream=null,scanRun=false;
-$('btnScan').onclick=async()=>{
-  if(!('BarcodeDetector' in window)){alert('此浏览器不支持扫码(用新版安卓Chrome), 请手动输入电池码');return;}
-  try{
-    const det=new BarcodeDetector();
-    scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    const v=$('scanVid'); v.srcObject=scanStream; await v.play();
-    $('scanModal').style.display='flex'; scanRun=true;
-    const loop=async()=>{
-      if(!scanRun)return;
-      try{const codes=await det.detect(v); if(codes&&codes.length){const val=codes[0].rawValue;$('bcode').value=val;localStorage.setItem('jcy_bcode',val);stopScan();return;}}catch(e){}
-      requestAnimationFrame(loop);
-    };
-    loop();
-  }catch(e){alert('打不开摄像头: '+e.message);stopScan();}
-};
-function stopScan(){scanRun=false;$('scanModal').style.display='none';if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;}}
-$('scanCancel').onclick=stopScan;
-
+function finish(){const rcts=results.map(r=>r.Rct),c=A.consistency(rcts,tol);
+  let h='<tr style="color:#8e8e93"><td>串</td><td>Rs</td><td>Rct</td><td>偏差%</td><td>状态</td></tr>';
+  results.forEach((r,i)=>{const bad=Math.abs(c.dev[i])>tol;h+='<tr style="'+(bad?'background:#ffeceb':'')+'"><td>'+r.k+'</td><td>'+(r.Rs/1000).toFixed(3)+'</td><td>'+(r.Rct/1000).toFixed(3)+'</td><td>'+(c.dev[i]>=0?'+':'')+c.dev[i].toFixed(1)+'</td><td class="'+(bad?'bad':'ok')+'">'+(bad?'超差':'OK')+'</td></tr>';});
+  $('resTbl').innerHTML='<table>'+h+'</table>';
+  $('dTitle').textContent='整包一致性 (中位 Rct '+(c.median/1000).toFixed(3)+'mΩ)';
+  $('badText').innerHTML=c.bad.length?('<span class="bad">⚠超差串: '+c.bad.map(b=>'第'+(b.i+1)+'串('+(b.dev>=0?'+':'')+b.dev.toFixed(1)+'%)').join('、')+'</span>'):('<span class="ok">✅全部在±'+tol+'%内, 一致性良好</span>');
+  $('cMeasure').style.display='none';$('cDone').style.display='block';$('packSt').textContent='';}
+function reportText(){const c=A.consistency(results.map(r=>r.Rct),tol);let s='鲸测云 JCY8001 不拆包一致性\n规格:'+($('spec').value||'-')+' 串数:'+N+' Rct偏差:±'+tol+'% 中位:'+(c.median/1000).toFixed(3)+'mΩ\n串,Rs_mΩ,Rct_mΩ,偏差%,状态\n';results.forEach((r,i)=>{const bad=Math.abs(c.dev[i])>tol;s+=[r.k,(r.Rs/1000).toFixed(3),(r.Rct/1000).toFixed(3),(c.dev[i]>=0?'+':'')+c.dev[i].toFixed(1),bad?'超差':'OK'].join(',')+'\n';});return s;}
+$('btnCopy').onclick=async()=>{try{await navigator.clipboard.writeText(reportText());alert('已复制');}catch(e){prompt('手动复制:',reportText());}};
+$('btnRestart').onclick=()=>{$('cDone').style.display='none';$('cSetup').style.display='block';};
+$('btnSavePack').onclick=async()=>{const phone=localStorage.getItem('jcy_phone')||'';const c=A.consistency(results.map(r=>r.Rct),tol);$('packSt').textContent='保存中...';
+  try{const r=await apiPost('/save',{user_phone:phone,battery_code:($('spec').value||'PACK')+'-'+new Date().toISOString().slice(5,16).replace(/[-:T]/g,''),rs:results[0]?results[0].Rs:null,rct:c.median,device_id:'JDY-10-pack',raw:{type:'consistency',n:N,tol:tol,median:c.median,cells:results,bad:c.bad},measured_at:new Date().toISOString()});$('packSt').textContent=r.ok?('已存整包#'+r.id):('存失败:'+(r.err||'?'));}catch(e){$('packSt').textContent='存失败:'+e.message;}};
+// 记住输入
+['phone','bcode'].forEach(id=>{const v=localStorage.getItem('jcy_'+id);if(v)$(id).value=v;$(id).addEventListener('input',()=>localStorage.setItem('jcy_'+id,$(id).value));});
+{const r=localStorage.getItem('jcy_range');if(r)$('range').value=r;const b=localStorage.getItem('jcy_band');if(b)$('band').value=b;
+ $('range').addEventListener('change',()=>localStorage.setItem('jcy_range',$('range').value));$('band').addEventListener('change',()=>localStorage.setItem('jcy_band',$('band').value));}
 $('ver').textContent=APP_VERSION;
-if(!navigator.bluetooth){document.querySelector('.nav').textContent='此浏览器不支持 Web 蓝牙(用安卓 Chrome)';}
-</script>
-</body></html>
+if(!navigator.bluetooth){document.querySelector('.nav').textContent='不支持Web蓝牙(用安卓Chrome)';}
+</script></body></html>
