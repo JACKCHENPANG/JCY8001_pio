@@ -111,7 +111,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.1.0 (2026-06-04)';
+const APP_VERSION='v1.1.1 (2026-06-04)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -400,7 +400,7 @@ $('btnSweep').onclick=async()=>{
   try{
     const sel=$('range').value;localStorage.setItem('jcy_range',sel);localStorage.setItem('jcy_band',$('band').value);
     const codes=$('band').value==='fast'?FAST:FULL;
-    const opts={onPoint:(i,n)=>$('prog').textContent='点 '+i+'/'+n,onTick:(s)=>$('prog').dataset.t=s.toFixed(0)};
+    const opts={avg:4,onPoint:(i,n)=>$('prog').textContent='点 '+i+'/'+n,onTick:(s)=>$('prog').dataset.t=s.toFixed(0)};
     if(sel==='auto')opts.auto=true;else{opts.auto=false;opts.samp=parseInt(sel);}
     const t0=Date.now();const s=await sweepCore(codes,opts);
     const el=((Date.now()-t0)/1000).toFixed(0);
@@ -478,13 +478,15 @@ $('btnConfirm').onclick=async()=>{
   const first=(lockedGear==null);$('cProg').textContent=first?'自动选档...':('锁档'+lockedGear.R+'Ω');
   try{
     const codes=$('cband').value==='full'?FULL:FAST;
-    const opts={avg:1,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n,onTick:(s)=>{const m=$('cProg').textContent;$('cProg').textContent=(m.indexOf('测点')>=0?m.split(' · ')[0]:m)+' · '+s.toFixed(0)+'s';}};
+    const opts={avg:4,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n,onTick:(s)=>{const m=$('cProg').textContent;$('cProg').textContent=(m.indexOf('测点')>=0?m.split(' · ')[0]:m)+' · '+s.toFixed(0)+'s';}};
     if(first)opts.auto=true;else{opts.auto=false;opts.samp=lockedGear.sel;}
     const s=await sweepCore(codes,opts);if(first&&s.gear)lockedGear=s.gear;
-    const {H,R,I}=clean(s);const e=H.length>=6?A.ecmFit(H,R,I):null;
-    if(!e){$('btnConfirm').disabled=false;alert('第'+idx+'串: 拟合失败/点不足('+H.length+'点), 检查正负/接触, 重测');return;}
-    if(e.rms>rmsThr){$('btnConfirm').disabled=false;alert('第'+idx+'串: RMS='+e.rms.toFixed(1)+'%>'+rmsThr+'%, 接触不良, 重插重测');return;}
-    const rec={k:idx,Rs:e.Rs_uOhm,Rct:e.Rct_uOhm,rms:e.rms};results.push(rec);
+    const {H,R,I}=clean(s);
+    const o=A.analyze(H,R,I);                          // 圆拟合(确定性)出 Rs/Rct, 重复性好
+    const e=H.length>=6?A.ecmFit(H,R,I):null;          // ECM 只用来做 RMS 质量门
+    if(o.Rct==null){$('btnConfirm').disabled=false;alert('第'+idx+'串: 圆拟合失败/点不足('+H.length+'点), 检查正负/接触, 重测');return;}
+    if(e&&e.rms>rmsThr){$('btnConfirm').disabled=false;alert('第'+idx+'串: RMS='+e.rms.toFixed(1)+'%>'+rmsThr+'%, 接触不良, 重插重测');return;}
+    const rec={k:idx,Rs:o.Rs,Rct:o.Rct,rms:e?e.rms:0};results.push(rec);
     // 边测边显
     if(!$('liveTbl').innerHTML)$('liveTbl').innerHTML='<tr style="color:#8e8e93"><td>串</td><td>Rs(mΩ)</td><td>Rct(mΩ)</td><td>RMS</td></tr>';
     $('liveTbl').innerHTML+=liveRow(rec,false);
