@@ -54,7 +54,7 @@
     <div class="row"><span class="lbl">挡位</span>
       <select id="range"><option value="auto">自动挡(推荐)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
     <div class="row"><span class="lbl">扫频范围</span>
-      <select id="band"><option value="express">极速 8点 (1kHz→7.6Hz, ~30s)</option><option value="fast">快扫 12点 (→1Hz)</option><option value="full">全扫 20点 (→0.12Hz)</option></select></div>
+      <select id="band"><option value="express">极速 8点 (1kHz→7.6Hz, ~30s)</option><option value="fast">较全 12点 (→1Hz, 较慢)</option></select></div>
     <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
     <canvas id="nyq" width="340" height="250"></canvas>
     <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
@@ -78,7 +78,7 @@
     <div class="row"><span class="lbl">电池规格</span><input id="spec" placeholder="可选"></div>
     <div class="row"><span class="lbl">Rct 偏差范围 %</span><input id="tol" type="number" value="15" style="width:30%"></div>
     <div class="row"><span class="lbl">RMS 可用阈值 %</span><input id="rmsThr" type="number" value="5" style="width:30%"></div>
-    <div class="row"><span class="lbl">扫频范围</span><select id="cband"><option value="express">极速 8点(~30s/串,推荐分选)</option><option value="fast">快扫 12点(→1Hz)</option><option value="full">全扫 20点(慢)</option></select></div>
+    <div class="row"><span class="lbl">扫频范围</span><select id="cband"><option value="express">极速 8点(~30s/串,推荐)</option><option value="fast">较全 12点(→1Hz,较慢)</option></select></div>
     <button class="full" id="btnStart" disabled>开始 (先连蓝牙)</button>
   </div>
   <div class="card" id="cMeasure" style="display:none">
@@ -111,7 +111,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.1.5 (2026-06-04)';
+const APP_VERSION='v1.1.6 (2026-06-04)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
