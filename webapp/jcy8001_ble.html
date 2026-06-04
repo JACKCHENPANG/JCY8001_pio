@@ -111,7 +111,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.1.1 (2026-06-04)';
+const APP_VERSION='v1.1.2 (2026-06-04)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -382,7 +382,23 @@ async function sweepCore(codes,opts){
   let gear=null;if(opts.auto){try{const s=(await rd(REG.SAMP,1))[0];gear={sel:s,R:[10,5,1][s]||10};}catch(e){}}
   return {hz,re,im,gear,elapsed:(Date.now()-t0)/1000};
 }
-function clean(s){const H=[],R=[],I=[];for(let k=0;k<s.hz.length;k++)if(s.re[k]>0){H.push(s.hz[k]);R.push(s.re[k]);I.push(s.im[k]);}return {H,R,I};}
+function clean(s){const H=[],R=[],I=[];const n=Math.min(s.hz.length,s.re.length,s.im.length);for(let k=0;k<n;k++)if(s.re[k]>0){H.push(s.hz[k]);R.push(s.re[k]);I.push(s.im[k]);}return {H,R,I};}
+// 自动质量判定 + 按需重测: 好→一次过, 差(点不齐/RMS高/圆拟合失败)→自动重测最多maxTries次
+async function measureGood(codes,opts,gate,maxTries,onStatus){
+  gate=gate||5;maxTries=maxTries||3;let best=null;
+  const need=Math.max(8,Math.ceil(codes.length*0.8));
+  for(let t=1;t<=maxTries;t++){
+    if(onStatus&&t>1)onStatus('质量差,自动重测 '+t+'/'+maxTries+'…');
+    const s=await sweepCore(codes,opts);const {H,R,I}=clean(s);
+    let o=null,e=null,rms=999;
+    if(H.length>=6){o=A.analyze(H,R,I);e=A.ecmFit(H,R,I);rms=e?e.rms:999;}
+    const complete=H.length>=need, hasRct=o&&o.Rct!=null;
+    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('点不齐'+H.length+'/'+codes.length):(!hasRct?'圆拟合失败':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
+    if(complete&&hasRct&&rms<gate)return Object.assign(cand,{ok:true,tries:t});
+    if(!best||(cand.complete&&!best.complete)||(cand.rms<best.rms))best=cand;
+  }
+  return Object.assign(best||{ok:false,H:[],reason:'无数据'},{ok:false,tries:maxTries});
+}
 // ===== UI 通用 =====
 const $=id=>document.getElementById(id);
 function setSt(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
@@ -402,18 +418,18 @@ $('btnSweep').onclick=async()=>{
     const codes=$('band').value==='fast'?FAST:FULL;
     const opts={avg:4,onPoint:(i,n)=>$('prog').textContent='点 '+i+'/'+n,onTick:(s)=>$('prog').dataset.t=s.toFixed(0)};
     if(sel==='auto')opts.auto=true;else{opts.auto=false;opts.samp=parseInt(sel);}
-    const t0=Date.now();const s=await sweepCore(codes,opts);
+    const t0=Date.now();
+    const r=await measureGood(codes,opts,5,3,(m)=>$('prog').textContent=m);
     const el=((Date.now()-t0)/1000).toFixed(0);
-    const {H,R,I}=clean(s);
-    if(H.length<4){$('prog').textContent='有效点不足('+H.length+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
-    const o=A.analyze(H,R,I);const e=H.length>=6?A.ecmFit(H,R,I):null;
+    const {H,R,I,o,e}=r;
+    if(!H||H.length<4){$('prog').textContent='测量失败('+(r.reason||'')+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
     $('L').textContent=o.L_nH!=null?o.L_nH.toFixed(0)+' nH':'—';
     $('rs').textContent=o.Rs!=null?(o.Rs/1000).toFixed(3)+' mΩ':'—';
     $('rct').textContent=o.Rct!=null?(o.Rct/1000).toFixed(3)+' mΩ':(e?(e.Rct_uOhm/1000).toFixed(3)+' mΩ(ECM)':'—');
     const rms=e?e.rms:null;
     $('rms').innerHTML=rms!=null?('<span class="'+(rms<5?'ok':rms<10?'warn':'bad')+'">'+rms.toFixed(2)+'%'+(rms<5?' 良':rms<10?' 一般':' 差,建议重测')+'</span>'):'—';
     if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
-    $('prog').textContent='完成 '+H.length+'点, 用时'+el+'s';
+    $('prog').textContent=(r.ok?'完成':'⚠质量勉强('+r.reason+')')+' '+H.length+'点 用时'+el+'s'+(r.tries>1?' 重测'+r.tries+'次':'');
     draw('nyq',H,R,I,o);
     gLast={hz:H,re:R,im:I,o:o,ecm:e};saveRecord();
   }catch(err){$('ecm').textContent='出错: '+err.message;}
@@ -480,13 +496,10 @@ $('btnConfirm').onclick=async()=>{
     const codes=$('cband').value==='full'?FULL:FAST;
     const opts={avg:4,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n,onTick:(s)=>{const m=$('cProg').textContent;$('cProg').textContent=(m.indexOf('测点')>=0?m.split(' · ')[0]:m)+' · '+s.toFixed(0)+'s';}};
     if(first)opts.auto=true;else{opts.auto=false;opts.samp=lockedGear.sel;}
-    const s=await sweepCore(codes,opts);if(first&&s.gear)lockedGear=s.gear;
-    const {H,R,I}=clean(s);
-    const o=A.analyze(H,R,I);                          // 圆拟合(确定性)出 Rs/Rct, 重复性好
-    const e=H.length>=6?A.ecmFit(H,R,I):null;          // ECM 只用来做 RMS 质量门
-    if(o.Rct==null){$('btnConfirm').disabled=false;alert('第'+idx+'串: 圆拟合失败/点不足('+H.length+'点), 检查正负/接触, 重测');return;}
-    if(e&&e.rms>rmsThr){$('btnConfirm').disabled=false;alert('第'+idx+'串: RMS='+e.rms.toFixed(1)+'%>'+rmsThr+'%, 接触不良, 重插重测');return;}
-    const rec={k:idx,Rs:o.Rs,Rct:o.Rct,rms:e?e.rms:0};results.push(rec);
+    const r=await measureGood(codes,opts,rmsThr,3,(m)=>$('cProg').textContent=m);  // 自动判质量+按需重测
+    if(first&&r.gear)lockedGear=r.gear;
+    if(!r.ok){$('btnConfirm').disabled=false;alert('第'+idx+'串: 自动重测3次仍不达标('+r.reason+')。请检查探针正负/接触是否牢固, 再点确认重测');return;}
+    const rec={k:idx,Rs:r.o.Rs,Rct:r.o.Rct,rms:r.rms};results.push(rec);
     // 边测边显
     if(!$('liveTbl').innerHTML)$('liveTbl').innerHTML='<tr style="color:#8e8e93"><td>串</td><td>Rs(mΩ)</td><td>Rct(mΩ)</td><td>RMS</td></tr>';
     $('liveTbl').innerHTML+=liveRow(rec,false);
