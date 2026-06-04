@@ -14,6 +14,7 @@ const DB_PATH = '/root/jcy-test-data/battery_trace.db';
 const db = new DatabaseSync(DB_PATH);
 db.exec(`CREATE TABLE IF NOT EXISTS battery_impedance_tests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_serial TEXT,
   user_phone TEXT,
   battery_code TEXT NOT NULL,
   spectrum_json TEXT,
@@ -26,12 +27,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS battery_impedance_tests(
 );`);
 // 旧库补列(已存在则忽略)
 try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN photo_path TEXT`); } catch {}
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN device_serial TEXT`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_serial_time ON battery_impedance_tests(device_serial, measured_at)`); } catch {}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_code_time ON battery_impedance_tests(battery_code, measured_at);`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_user_time ON battery_impedance_tests(user_phone, measured_at);`);
 
 const ins = db.prepare(`INSERT INTO battery_impedance_tests
- (user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,photo_path,measured_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+ (device_serial,user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,photo_path,measured_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 
 function savePhoto(dataUrl) {
   if (!dataUrl || typeof dataUrl !== 'string') return null;
@@ -74,7 +77,7 @@ http.createServer(async (req, res) => {
     let photo = null;
     try { photo = savePhoto(b.photo); } catch (e) { photo = null; }
     const r = ins.run(
-      str(b.user_phone), String(b.battery_code), JSON.stringify(b.spectrum || null),
+      str(b.device_serial), str(b.user_phone), String(b.battery_code), JSON.stringify(b.spectrum || null),
       num(b.rs), num(b.rct), num(b.l_nh), JSON.stringify(b.ecm || null),
       num(b.temp), num(b.volt), str(b.device_id), str(b.operator),
       JSON.stringify(b.raw || null), photo, str(b.measured_at) || new Date().toISOString());
@@ -84,8 +87,10 @@ http.createServer(async (req, res) => {
     const code = u.searchParams.get('code');
     const phone = u.searchParams.get('phone');
     const lim = Math.min(parseInt(u.searchParams.get('limit') || '50'), 500);
-    const cols = `id,user_phone,battery_code,rs,rct,l_nh,temp,volt,photo_path,measured_at,created_at`;
+    const cols = `id,device_serial,user_phone,battery_code,rs,rct,l_nh,temp,volt,photo_path,measured_at,created_at`;
     const where = []; const args = [];
+    const serial = u.searchParams.get('serial');
+    if (serial) { where.push('device_serial=?'); args.push(serial); }
     if (phone) { where.push('user_phone=?'); args.push(phone); }
     if (code) { where.push('battery_code=?'); args.push(code); }
     const sql = `SELECT ${cols} FROM battery_impedance_tests` +
