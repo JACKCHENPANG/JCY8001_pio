@@ -81,7 +81,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0222;   // v2.22 (USART1/BLE 波特率→115200 匹配 JDY-10 出厂默认)
+    jcy_fw_version = 0x0223;   // v2.23 (加设备唯一序列号 UID 寄存器 0x3E10-15)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -108,6 +108,8 @@ static uint16_t get_reg(uint16_t addr) {
     if (addr >= 0x3600 && addr <= 0x363F) return jcy_sweep_vzm[addr-0x3600];
     if (addr >= 0x3640 && addr <= 0x367F) return jcy_sweep_fecho[addr-0x3640];
     if (addr >= 0x4400 && addr <= 0x443F) return jcy_sweep_freq[addr-0x4400];
+    /* 设备唯一序列号 = STM32 出厂 96位 UID (0x1FFFF7E8), 6 个寄存器 0x3E10..0x3E15 */
+    if (addr >= 0x3E10 && addr <= 0x3E15) return *(volatile uint16_t*)(0x1FFFF7E8u + (uint32_t)(addr-0x3E10)*2u);
     switch (addr) {
         case 0x3E00: return jcy_ch_count;
         case 0x3E01: return jcy_version;
