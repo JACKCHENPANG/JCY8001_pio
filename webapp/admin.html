@@ -59,7 +59,7 @@ canvas{width:100%;height:auto;border:1px solid #eee;border-radius:8px;margin-top
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <b>测试记录</b><span class="muted" id="cnt"></span></div>
       <div class="tblbox"><table><thead><tr>
-        <th>#</th><th>设备序列号</th><th>电池码</th><th>Rs(mΩ)</th><th>Rct(mΩ)</th><th>L(nH)</th><th>温度</th><th>电压</th><th>操作员</th><th>测量时间</th><th>📷</th>
+        <th>#</th><th>设备序列号</th><th>电池码</th><th>Rs(mΩ)</th><th>Rct(mΩ)</th><th>Rct归一(mΩ)</th><th>化学</th><th>SOC</th><th>温度</th><th>电压</th><th>操作员</th><th>测量时间</th><th>📷</th>
       </tr></thead><tbody id="rows"></tbody></table></div>
       <div class="pg"><button class="ghost" id="prev">上一页</button><span id="pginfo" class="muted"></span><button class="ghost" id="next">下一页</button></div>
     </div>
@@ -121,10 +121,11 @@ async function loadRows(){
   $('cnt').textContent='共 '+j.total+' 条';
   $('rows').innerHTML=j.rows.map(r=>`<tr class="row" data-id="${r.id}">
     <td>${r.id}</td><td class="mono">${r.device_serial||'—'}</td><td>${r.battery_code||''}</td>
-    <td>${mo(r.rs)}</td><td>${mo(r.rct)}</td><td>${r.l_nh??'—'}</td>
+    <td>${mo(r.rs)}</td><td>${mo(r.rct)}</td><td>${mo(r.rct_norm)}</td>
+    <td>${r.chemistry||'—'}</td><td>${r.soc!=null?r.soc.toFixed(0)+'%':'—'}</td>
     <td>${r.temp??'—'}</td><td>${r.volt??'—'}</td><td>${r.operator||r.user_phone||'—'}</td>
     <td>${(r.measured_at||'').replace('T',' ').slice(0,19)}</td>
-    <td>${r.photo_path?'📷':''}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">无记录</td></tr>';
+    <td>${r.photo_path?'📷':''}</td></tr>`).join('')||'<tr><td colspan="13" class="muted">无记录</td></tr>';
   [...document.querySelectorAll('tr.row')].forEach(tr=>tr.onclick=()=>detail(tr.dataset.id));
   const from=j.total?page*PAGE+1:0,to=Math.min((page+1)*PAGE,j.total);
   $('pginfo').textContent=from+'–'+to+' / '+j.total;
@@ -143,8 +144,10 @@ async function detail(id){
   const r=j.row;$('mTitle').textContent='记录 #'+r.id;
   const kv=(k,v)=>`<div class="kv"><span class="k">${k}</span><span>${v??'—'}</span></div>`;
   let h=kv('设备序列号',r.device_serial)+kv('电池码',r.battery_code)+kv('操作员',r.operator||r.user_phone)
-    +kv('Rs',mo(r.rs)+' mΩ')+kv('Rct',mo(r.rct)+' mΩ')+kv('电感',(r.l_nh??'—')+' nH')
-    +kv('温度',r.temp)+kv('电压',r.volt)+kv('设备',r.device_id)+kv('测量时间',(r.measured_at||'').replace('T',' ').slice(0,19));
+    +kv('Rs',mo(r.rs)+' mΩ')+kv('Rct',mo(r.rct)+' mΩ')
+    +kv('Rct归一(50%/25℃)',r.rct_norm!=null?mo(r.rct_norm)+' mΩ':'—')+kv('化学',r.chemistry)+kv('SOC',r.soc!=null?r.soc.toFixed(0)+'%':'—')
+    +kv('电感',(r.l_nh??'—')+' nH')
+    +kv('温度',r.temp)+kv('电压(OCV)',r.volt)+kv('设备',r.device_id)+kv('测量时间',(r.measured_at||'').replace('T',' ').slice(0,19));
   if(r.photo_path)h+=`<div style="margin-top:10px"><a href="/battery-photos/${r.photo_path}" target="_blank"><img src="/battery-photos/${r.photo_path}" style="max-width:100%;border-radius:8px"></a></div>`;
   h+='<canvas id="ny" width="600" height="380"></canvas>';
   $('mBody').innerHTML=h;$('modal').style.display='flex';

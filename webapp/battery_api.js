@@ -29,12 +29,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS battery_impedance_tests(
 try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN photo_path TEXT`); } catch {}
 try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN device_serial TEXT`); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_serial_time ON battery_impedance_tests(device_serial, measured_at)`); } catch {}
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN chemistry TEXT`); } catch {}
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN soc REAL`); } catch {}
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN rct_norm REAL`); } catch {}
+try { db.exec(`ALTER TABLE battery_impedance_tests ADD COLUMN norm_json TEXT`); } catch {}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_code_time ON battery_impedance_tests(battery_code, measured_at);`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_user_time ON battery_impedance_tests(user_phone, measured_at);`);
 
 const ins = db.prepare(`INSERT INTO battery_impedance_tests
- (device_serial,user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,photo_path,measured_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+ (device_serial,user_phone,battery_code,spectrum_json,rs,rct,l_nh,ecm_json,temp,volt,device_id,operator,raw_json,photo_path,measured_at,chemistry,soc,rct_norm,norm_json)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 
 function savePhoto(dataUrl) {
   if (!dataUrl || typeof dataUrl !== 'string') return null;
@@ -105,7 +109,7 @@ http.createServer(async (req, res) => {
       const off = parseInt(u.searchParams.get('offset') || '0');
       const wsql = where.length ? ' WHERE ' + where.join(' AND ') : '';
       const total = db.prepare(`SELECT COUNT(*) n FROM battery_impedance_tests` + wsql).get(...args).n;
-      const cols = `id,device_serial,operator,user_phone,battery_code,rs,rct,l_nh,temp,volt,photo_path,measured_at,created_at`;
+      const cols = `id,device_serial,operator,user_phone,battery_code,rs,rct,rct_norm,chemistry,soc,l_nh,temp,volt,photo_path,measured_at,created_at`;
       const rows = db.prepare(`SELECT ${cols} FROM battery_impedance_tests${wsql} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, lim, off);
       return send(res, 200, { ok: true, total, rows });
     }
@@ -129,9 +133,9 @@ http.createServer(async (req, res) => {
       if (from) { where.push('measured_at>=?'); args.push(from); }
       if (to) { where.push('measured_at<=?'); args.push(to + 'T23:59:59'); }
       const wsql = where.length ? ' WHERE ' + where.join(' AND ') : '';
-      const rows = db.prepare(`SELECT id,device_serial,operator,battery_code,rs,rct,l_nh,temp,volt,measured_at FROM battery_impedance_tests${wsql} ORDER BY id DESC LIMIT 50000`).all(...args);
-      let csv = '﻿id,设备序列号,操作员,电池码,Rs_mOhm,Rct_mOhm,L_nH,温度,电压,测量时间\n';
-      for (const r of rows) csv += [r.id, r.device_serial || '', r.operator || '', r.battery_code, mohm(r.rs), mohm(r.rct), r.l_nh ?? '', r.temp ?? '', r.volt ?? '', r.measured_at].join(',') + '\n';
+      const rows = db.prepare(`SELECT id,device_serial,operator,battery_code,rs,rct,rct_norm,chemistry,soc,l_nh,temp,volt,measured_at FROM battery_impedance_tests${wsql} ORDER BY id DESC LIMIT 50000`).all(...args);
+      let csv = '﻿id,设备序列号,操作员,电池码,Rs_mOhm,Rct_mOhm,Rct归一_mOhm,化学,SOC,L_nH,温度,电压,测量时间\n';
+      for (const r of rows) csv += [r.id, r.device_serial || '', r.operator || '', r.battery_code, mohm(r.rs), mohm(r.rct), mohm(r.rct_norm), r.chemistry || '', r.soc != null ? r.soc.toFixed(0) : '', r.l_nh ?? '', r.temp ?? '', r.volt ?? '', r.measured_at].join(',') + '\n';
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
       return res.end(csv);
     }
@@ -149,7 +153,8 @@ http.createServer(async (req, res) => {
       str(b.device_serial), str(b.user_phone), String(b.battery_code), JSON.stringify(b.spectrum || null),
       num(b.rs), num(b.rct), num(b.l_nh), JSON.stringify(b.ecm || null),
       num(b.temp), num(b.volt), str(b.device_id), str(b.operator),
-      JSON.stringify(b.raw || null), photo, str(b.measured_at) || new Date().toISOString());
+      JSON.stringify(b.raw || null), photo, str(b.measured_at) || new Date().toISOString(),
+      str(b.chemistry), num(b.soc), num(b.rct_norm), JSON.stringify(b.norm || null));
     return send(res, 200, { ok: true, id: Number(r.lastInsertRowid), photo: photo });
   }
   if (req.method === 'GET' && u.pathname === '/list') {

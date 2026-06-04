@@ -207,6 +207,73 @@ function consistency(rcts, tolPct) {
   return { median: med, dev: dev, bad: bad };
 }
 
-const API = { fitInductance, analyze, semicircleFit, ecmFit, ecmModel, consistency, findArtifact };
+// ════════════ SOC / 温度 归一化 (Phase 1: 文献默认曲线, 标"待标定") ════════════
+// 静置 OCV(V) → 化学体系分桶。粗判, 拆机混料用。
+function detectChemistry(ocv) {
+  if (ocv == null || !isFinite(ocv)) return { chem: 'unknown', name: '未知' };
+  if (ocv >= 2.0 && ocv < 2.9) return { chem: 'LTO', name: '钛酸锂' };
+  if (ocv >= 2.9 && ocv <= 3.45) return { chem: 'LFP', name: '磷酸铁锂' };
+  if (ocv > 3.45 && ocv <= 4.3) return { chem: 'NMC', name: '三元/钴酸锂' };
+  return { chem: 'unknown', name: '未知' };
+}
+
+// 文献典型 OCV-SOC 表 (单调插值)。LFP 平台段 SOC 不可靠(reliable=false)。
+const OCV_SOC = {
+  LFP: { soc: [0, 5, 10, 20, 50, 80, 90, 95, 100], ocv: [2.50, 3.00, 3.20, 3.25, 3.30, 3.32, 3.34, 3.45, 3.65] },
+  NMC: { soc: [0, 10, 20, 50, 80, 90, 100], ocv: [3.00, 3.50, 3.60, 3.70, 4.00, 4.10, 4.20] },
+  LTO: { soc: [0, 10, 50, 90, 100], ocv: [2.00, 2.20, 2.35, 2.50, 2.70] },
+};
+function interp(x, xs, ys) {
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[xs.length - 1]) return ys[ys.length - 1];
+  for (let i = 1; i < xs.length; i++) if (x <= xs[i]) {
+    const t = (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return ys[i - 1] + t * (ys[i] - ys[i - 1]);
+  }
+  return ys[ys.length - 1];
+}
+function socFromOcv(ocv, chem) {
+  const t = OCV_SOC[chem]; if (!t || ocv == null) return { soc: null, reliable: false };
+  const soc = interp(ocv, t.ocv, t.soc);
+  // LFP 平台 20~90% OCV 几乎不变 → SOC 不可靠
+  const reliable = chem === 'LFP' ? (soc < 18 || soc > 92) : true;
+  return { soc: Math.max(0, Math.min(100, soc)), reliable };
+}
+
+// 文献典型 Rct(SOC) 相对系数, 参考 SOC=50%。k = Rct@50% / Rct(SOC) (乘到实测把它拉到50%口径)
+const KSOC = {
+  LFP: { soc: [0, 10, 15, 20, 50, 80, 85, 90, 100], k: [0.70, 0.85, 0.95, 1.00, 1.00, 1.00, 0.95, 0.85, 0.70] },
+  NMC: { soc: [0, 10, 20, 50, 80, 90, 100], k: [0.60, 0.80, 0.92, 1.00, 0.92, 0.80, 0.62] },
+  LTO: { soc: [0, 20, 50, 80, 100], k: [0.85, 0.95, 1.00, 0.95, 0.85] },
+};
+function kSoc(soc, chem) { const t = KSOC[chem]; if (!t || soc == null) return 1; return interp(soc, t.soc, t.k); }
+
+// Arrhenius 温度归一到 25℃: Rct(T)=A·exp(Ea/RT); k(T)=Rct(25)/Rct(T)=exp(Ea/R·(1/298.15-1/T))
+function kTemp(tempC, Ea) {
+  if (tempC == null || !isFinite(tempC)) return 1;
+  Ea = Ea || 40000; const R = 8.314, T = tempC + 273.15, Tref = 298.15;
+  return Math.exp(Ea / R * (1 / Tref - 1 / T));
+}
+
+// Rct(µΩ) + OCV(V) + temp(℃) → 归一化到 SOC50%/25℃。返回 chem/soc/归一值/置信度。
+function normalizeRct(rct_uOhm, ocv, tempC, chemOverride) {
+  const det = chemOverride ? { chem: chemOverride, name: chemOverride } : detectChemistry(ocv);
+  const s = socFromOcv(ocv, det.chem);
+  const ks = kSoc(s.soc, det.chem), kt = kTemp(tempC);
+  const rct_norm = (rct_uOhm == null) ? null : rct_uOhm * ks * kt;
+  // 置信度: SOC 不可靠 或 偏离中段太远 或 温度偏离大 → 低
+  let conf = 'high';
+  if (det.chem === 'unknown') conf = 'none';
+  else if (!s.reliable) conf = 'low';
+  else if (s.soc != null && (s.soc < 25 || s.soc > 75)) conf = 'mid';
+  else if (tempC != null && Math.abs(tempC - 25) > 12) conf = 'mid';
+  return {
+    chem: det.chem, chemName: det.name, ocv: ocv, soc: s.soc, socReliable: s.reliable,
+    kSoc: ks, kTemp: kt, rct_raw: rct_uOhm, rct_norm: rct_norm, conf: conf,
+    note: '默认文献曲线, 待标定'
+  };
+}
+
+const API = { fitInductance, analyze, semicircleFit, ecmFit, ecmModel, consistency, findArtifact,
+  detectChemistry, socFromOcv, normalizeRct, kSoc, kTemp };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;   // Node 测试
 // 小程序: const A = require('../../utils/analysis.js')

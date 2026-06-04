@@ -61,6 +61,8 @@
     <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
     <div class="row"><span class="lbl">Rs (欧姆内阻)</span><span class="val" id="rs">—</span></div>
     <div class="row"><span class="lbl">Rct (电荷转移)</span><span class="val" id="rct">—</span></div>
+    <div class="row"><span class="lbl">化学 / SOC</span><span class="val" id="chem" style="font-size:13px">—</span></div>
+    <div class="row"><span class="lbl">Rct 归一(50%/25℃)</span><span class="val" id="rctn">—</span></div>
     <div class="row"><span class="lbl">拟合质量(RMS)</span><span class="val" id="rms">—</span></div>
     <div class="ecm" id="ecm" style="color:#cf222e;font-size:12px;margin-top:4px"></div>
   </div>
@@ -112,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.2.0 (2026-06-04)';
+const APP_VERSION='v1.3.0 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -343,7 +345,16 @@ function consistency(rcts, tolPct) {
   return { median: med, dev: dev, bad: bad };
 }
 
-const API = { fitInductance, analyze, semicircleFit, ecmFit, ecmModel, consistency, findArtifact };
+// ════ SOC/温度 归一化 (Phase1 文献默认曲线, 待标定) ════
+function detectChemistry(ocv){if(ocv==null||!isFinite(ocv))return{chem:'unknown',name:'未知'};if(ocv>=2.0&&ocv<2.9)return{chem:'LTO',name:'钛酸锂'};if(ocv>=2.9&&ocv<=3.45)return{chem:'LFP',name:'磷酸铁锂'};if(ocv>3.45&&ocv<=4.3)return{chem:'NMC',name:'三元/钴酸锂'};return{chem:'unknown',name:'未知'};}
+const OCV_SOC={LFP:{soc:[0,5,10,20,50,80,90,95,100],ocv:[2.50,3.00,3.20,3.25,3.30,3.32,3.34,3.45,3.65]},NMC:{soc:[0,10,20,50,80,90,100],ocv:[3.00,3.50,3.60,3.70,4.00,4.10,4.20]},LTO:{soc:[0,10,50,90,100],ocv:[2.00,2.20,2.35,2.50,2.70]}};
+function interpN(x,xs,ys){if(x<=xs[0])return ys[0];if(x>=xs[xs.length-1])return ys[ys.length-1];for(let i=1;i<xs.length;i++)if(x<=xs[i]){const t=(x-xs[i-1])/(xs[i]-xs[i-1]);return ys[i-1]+t*(ys[i]-ys[i-1]);}return ys[ys.length-1];}
+function socFromOcv(ocv,chem){const t=OCV_SOC[chem];if(!t||ocv==null)return{soc:null,reliable:false};const soc=interpN(ocv,t.ocv,t.soc);const reliable=chem==='LFP'?(soc<18||soc>92):true;return{soc:Math.max(0,Math.min(100,soc)),reliable};}
+const KSOC={LFP:{soc:[0,10,15,20,50,80,85,90,100],k:[0.70,0.85,0.95,1.00,1.00,1.00,0.95,0.85,0.70]},NMC:{soc:[0,10,20,50,80,90,100],k:[0.60,0.80,0.92,1.00,0.92,0.80,0.62]},LTO:{soc:[0,20,50,80,100],k:[0.85,0.95,1.00,0.95,0.85]}};
+function kSoc(soc,chem){const t=KSOC[chem];if(!t||soc==null)return 1;return interpN(soc,t.soc,t.k);}
+function kTemp(tempC,Ea){if(tempC==null||!isFinite(tempC))return 1;Ea=Ea||40000;const R=8.314,T=tempC+273.15,Tref=298.15;return Math.exp(Ea/R*(1/Tref-1/T));}
+function normalizeRct(rct_uOhm,ocv,tempC,chemOverride){const det=chemOverride?{chem:chemOverride,name:chemOverride}:detectChemistry(ocv);const s=socFromOcv(ocv,det.chem);const ks=kSoc(s.soc,det.chem),kt=kTemp(tempC);const rct_norm=(rct_uOhm==null)?null:rct_uOhm*ks*kt;let conf='high';if(det.chem==='unknown')conf='none';else if(!s.reliable)conf='low';else if(s.soc!=null&&(s.soc<25||s.soc>75))conf='mid';else if(tempC!=null&&Math.abs(tempC-25)>12)conf='mid';return{chem:det.chem,chemName:det.name,ocv:ocv,soc:s.soc,socReliable:s.reliable,kSoc:ks,kTemp:kt,rct_raw:rct_uOhm,rct_norm:rct_norm,conf:conf,note:'默认文献曲线,待标定'};}
+const API = { fitInductance, analyze, semicircleFit, ecmFit, ecmModel, consistency, findArtifact, detectChemistry, socFromOcv, normalizeRct, kSoc, kTemp };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;   // Node 测试
 // 小程序: const A = require('../../utils/analysis.js')
 
@@ -438,7 +449,14 @@ $('btnSweep').onclick=async()=>{
     if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
     $('prog').textContent=(r.ok?'完成':'⚠质量勉强('+r.reason+')')+' '+H.length+'点 用时'+el+'s'+(r.tries>1?' 重测'+r.tries+'次':'');
     draw('nyq',H,R,I,o);
-    gLast={hz:H,re:R,im:I,o:o,ecm:e};saveRecord();
+    // SOC/温度 归一化 (用 OCV=gVolt, 温度=gTemp)
+    const rctRaw=o.Rct!=null?o.Rct:(e?e.Rct_uOhm:null);
+    const nrm=A.normalizeRct(rctRaw,gVolt,gTemp);
+    const confTxt={high:'高',mid:'中',low:'低',none:'—'}[nrm.conf];
+    const confCls={high:'ok',mid:'warn',low:'bad',none:'bad'}[nrm.conf];
+    $('chem').textContent=nrm.chemName+(nrm.soc!=null?' / SOC≈'+nrm.soc.toFixed(0)+'%'+(nrm.socReliable?'':'(不可靠)'):'');
+    $('rctn').innerHTML=nrm.rct_norm!=null?((nrm.rct_norm/1000).toFixed(3)+' mΩ <span class="'+confCls+'" style="font-size:12px">[置信'+confTxt+']</span>'):'—';
+    gLast={hz:H,re:R,im:I,o:o,ecm:e,norm:nrm};saveRecord();
   }catch(err){$('ecm').textContent='出错: '+err.message;}
   $('btnSweep').disabled=false;
 };
@@ -449,7 +467,8 @@ async function saveRecord(){
   if(!bcode){$('saveSt').textContent='⚠未填电池码,未存';return;}
   $('saveSt').textContent='保存中...';
   try{const o=gLast.o,e=gLast.ecm;
-    const r=await apiPost('/save',{device_serial:gSerial,user_phone:oper,operator:oper,battery_code:bcode,spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,ecm:e?{rs:e.Rs_uOhm,rct:e.Rct_uOhm,n:e.n,rms:e.rms}:null,temp:gTemp,volt:gVolt,device_id:gSerial||'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()});
+    const nm=gLast.norm;
+    const r=await apiPost('/save',{device_serial:gSerial,user_phone:oper,operator:oper,battery_code:bcode,spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,ecm:e?{rs:e.Rs_uOhm,rct:e.Rct_uOhm,n:e.n,rms:e.rms}:null,temp:gTemp,volt:gVolt,chemistry:nm?nm.chem:null,soc:nm?nm.soc:null,rct_norm:nm?nm.rct_norm:null,norm:nm?{chem:nm.chem,soc:nm.soc,reliable:nm.socReliable,kSoc:nm.kSoc,kTemp:nm.kTemp,conf:nm.conf}:null,device_id:gSerial||'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()});
     if(r.ok){$('saveSt').textContent='已存 #'+r.id+(gPhoto?' 📷':'');clearPhoto();}else $('saveSt').textContent='存失败:'+(r.err||'?');
   }catch(e){$('saveSt').textContent='存失败(离线?):'+e.message;}
 }
