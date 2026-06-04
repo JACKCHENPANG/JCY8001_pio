@@ -111,7 +111,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.1.4 (2026-06-04)';
+const APP_VERSION='v1.1.5 (2026-06-04)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -354,7 +354,7 @@ async function bleConnect(){
   const s=await(await d.gatt.connect()).getPrimaryService(SVC);
   gChar=await s.getCharacteristic(CHR);await gChar.startNotifications();
   gChar.addEventListener('characteristicvaluechanged',onN);
-  d.addEventListener('gattserverdisconnected',()=>{gChar=null;setSt('已断开',false);$('btnSweep').disabled=true;$('btnStart').disabled=true;});
+  d.addEventListener('gattserverdisconnected',()=>{gChar=null;gWarmed=false;setSt('已断开',false);$('btnSweep').disabled=true;$('btnStart').disabled=true;});
 }
 async function txn(fr,rl,to){to=to||4000;for(let a=0;a<2;a++){rxBuf=[];await gChar.writeValueWithoutResponse(fr);const t=Date.now();while(rxBuf.length<rl&&Date.now()-t<to)await sleep(40);if(rxBuf.length>=rl)break;await sleep(150);}return new Uint8Array(rxBuf);}
 async function rd(r,n){const x=parseRead(await txn(f03(r,n),5+2*n));if(!x)throw new Error('rd0x'+r.toString(16));return x;}
@@ -389,6 +389,7 @@ function clean(s){const H=[],R=[],I=[];const n=Math.min(s.hz.length,s.re.length,
 // 自动质量判定 + 按需重测: 好→一次过, 差(点不齐/RMS高/圆拟合失败)→自动重测最多maxTries次
 async function measureGood(codes,opts,gate,maxTries,onStatus){
   gate=gate||5;maxTries=maxTries||3;let best=null;
+  if(!gWarmed){if(onStatus)onStatus('首次预热(空跑1条)…');try{await sweepCore(codes,{auto:opts.auto,samp:opts.samp,avg:opts.avg});}catch(e){}gWarmed=true;}  // 丢弃首测settling
   for(let t=1;t<=maxTries;t++){
     if(onStatus&&t>1)onStatus('有掉点/质量差,自动重测 '+t+'/'+maxTries+'…');
     const s=await sweepCore(codes,opts);const {H,R,I}=clean(s);
@@ -405,7 +406,7 @@ async function measureGood(codes,opts,gate,maxTries,onStatus){
 const $=id=>document.getElementById(id);
 function setSt(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
 function showTab(t){$('tabA').className='tab'+(t==='A'?' on':'');$('tabB').className='tab'+(t==='B'?' on':'');$('viewA').style.display=t==='A'?'block':'none';$('viewB').style.display=t==='B'?'block':'none';}
-let gTemp=null,gVolt=null,gLast=null,gPhoto=null;
+let gTemp=null,gVolt=null,gLast=null,gPhoto=null,gWarmed=false;
 $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect();setSt('已连接(BLE)',true);
   const fw=(await rd(REG.FW,1))[0];$('fw').textContent='v'+((fw>>8)&0xFF).toString(16)+'.'+String(fw&0xFF).padStart(2,'0');
   gTemp=(await rd(REG.TEMP,1))[0]/10;$('tp').textContent=gTemp.toFixed(1)+'℃';
