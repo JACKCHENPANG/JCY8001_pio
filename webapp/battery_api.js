@@ -57,6 +57,23 @@ function auth(req) {
   const h = req.headers['authorization'] || '';
   return h === 'Bearer ' + TOKEN;
 }
+// ===== 管理后台鉴权 (账号密码 -> 内存 session token) =====
+const ADMIN_USER = process.env.JCY_ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.JCY_ADMIN_PASS || 'jcy-admin-2026';
+const sessions = new Map();   // token -> expiry(ms)
+const SESSION_MS = 12 * 3600 * 1000;
+function newSession() {
+  const t = crypto.randomBytes(24).toString('hex');
+  sessions.set(t, Date.now() + SESSION_MS);
+  return t;
+}
+function adminAuth(req) {
+  const t = req.headers['x-admin-token'] || '';
+  const exp = sessions.get(t);
+  if (!exp) return false;
+  if (Date.now() > exp) { sessions.delete(t); return false; }
+  return true;
+}
 function readBody(req) {
   return new Promise((resolve) => {
     let d = ''; req.on('data', c => { d += c; if (d.length > 5e6) req.destroy(); });
@@ -68,6 +85,58 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (u.pathname === '/health') return send(res, 200, { ok: true, ts: new Date().toISOString() });
+
+  // ===== 管理后台路由 (账号密码 session, 不走 Bearer) =====
+  if (req.method === 'POST' && u.pathname === '/admin/login') {
+    const b = await readBody(req);
+    if (!b || b.user !== ADMIN_USER || b.pass !== ADMIN_PASS) return send(res, 401, { ok: false, err: '账号或密码错误' });
+    return send(res, 200, { ok: true, token: newSession(), expires_in: SESSION_MS / 1000 });
+  }
+  if (u.pathname.startsWith('/admin/')) {
+    if (!adminAuth(req)) return send(res, 401, { ok: false, err: '未登录或已过期' });
+    if (req.method === 'GET' && u.pathname === '/admin/list') {
+      const where = []; const args = [];
+      const f = { serial: 'device_serial', code: 'battery_code', operator: 'operator' };
+      for (const [k, col] of Object.entries(f)) { const v = u.searchParams.get(k); if (v) { where.push(col + ' LIKE ?'); args.push('%' + v + '%'); } }
+      const from = u.searchParams.get('from'), to = u.searchParams.get('to');
+      if (from) { where.push('measured_at>=?'); args.push(from); }
+      if (to) { where.push('measured_at<=?'); args.push(to + 'T23:59:59'); }
+      const lim = Math.min(parseInt(u.searchParams.get('limit') || '100'), 1000);
+      const off = parseInt(u.searchParams.get('offset') || '0');
+      const wsql = where.length ? ' WHERE ' + where.join(' AND ') : '';
+      const total = db.prepare(`SELECT COUNT(*) n FROM battery_impedance_tests` + wsql).get(...args).n;
+      const cols = `id,device_serial,operator,user_phone,battery_code,rs,rct,l_nh,temp,volt,photo_path,measured_at,created_at`;
+      const rows = db.prepare(`SELECT ${cols} FROM battery_impedance_tests${wsql} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, lim, off);
+      return send(res, 200, { ok: true, total, rows });
+    }
+    if (req.method === 'GET' && u.pathname === '/admin/record') {
+      const id = parseInt(u.searchParams.get('id'));
+      return send(res, 200, { ok: true, row: db.prepare(`SELECT * FROM battery_impedance_tests WHERE id=?`).get(id) });
+    }
+    if (req.method === 'GET' && u.pathname === '/admin/stats') {
+      const total = db.prepare(`SELECT COUNT(*) n FROM battery_impedance_tests`).get().n;
+      const devices = db.prepare(`SELECT COUNT(DISTINCT device_serial) n FROM battery_impedance_tests WHERE device_serial IS NOT NULL`).get().n;
+      const codes = db.prepare(`SELECT COUNT(DISTINCT battery_code) n FROM battery_impedance_tests`).get().n;
+      const last7 = db.prepare(`SELECT COUNT(*) n FROM battery_impedance_tests WHERE measured_at>=?`).get(new Date(Date.now() - 7 * 864e5).toISOString()).n;
+      const byDev = db.prepare(`SELECT device_serial s, COUNT(*) n, MAX(measured_at) last FROM battery_impedance_tests WHERE device_serial IS NOT NULL GROUP BY device_serial ORDER BY n DESC LIMIT 50`).all();
+      return send(res, 200, { ok: true, total, devices, codes, last7, byDev });
+    }
+    if (req.method === 'GET' && u.pathname === '/admin/export') {
+      const where = []; const args = [];
+      const f = { serial: 'device_serial', code: 'battery_code', operator: 'operator' };
+      for (const [k, col] of Object.entries(f)) { const v = u.searchParams.get(k); if (v) { where.push(col + ' LIKE ?'); args.push('%' + v + '%'); } }
+      const from = u.searchParams.get('from'), to = u.searchParams.get('to');
+      if (from) { where.push('measured_at>=?'); args.push(from); }
+      if (to) { where.push('measured_at<=?'); args.push(to + 'T23:59:59'); }
+      const wsql = where.length ? ' WHERE ' + where.join(' AND ') : '';
+      const rows = db.prepare(`SELECT id,device_serial,operator,battery_code,rs,rct,l_nh,temp,volt,measured_at FROM battery_impedance_tests${wsql} ORDER BY id DESC LIMIT 50000`).all(...args);
+      let csv = '﻿id,设备序列号,操作员,电池码,Rs_mOhm,Rct_mOhm,L_nH,温度,电压,测量时间\n';
+      for (const r of rows) csv += [r.id, r.device_serial || '', r.operator || '', r.battery_code, mohm(r.rs), mohm(r.rct), r.l_nh ?? '', r.temp ?? '', r.volt ?? '', r.measured_at].join(',') + '\n';
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      return res.end(csv);
+    }
+    return send(res, 404, { ok: false, err: 'not found' });
+  }
 
   if (!auth(req)) return send(res, 401, { ok: false, err: 'unauthorized' });
 

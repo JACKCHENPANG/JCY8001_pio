@@ -1,0 +1,174 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🐳 鲸测云 · 测试数据管理后台</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,"PingFang SC",system-ui,sans-serif;background:#f5f6f8;color:#222;font-size:14px}
+.hd{background:#0a2540;color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+.hd b{font-size:16px}.hd .v{opacity:.6;font-size:12px;margin-left:8px}
+.wrap{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:10px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:14px}
+button{background:#0a66ff;color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+button.ghost{background:#eef1f5;color:#333}
+input{border:1px solid #d4d8de;border-radius:8px;padding:8px 10px;font-size:14px;width:100%}
+label{display:block;font-size:12px;color:#666;margin-bottom:4px}
+.stats{display:flex;gap:12px;flex-wrap:wrap}
+.stat{flex:1;min-width:120px;background:#fff;border-radius:10px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.stat .n{font-size:26px;font-weight:700;color:#0a66ff}.stat .l{font-size:12px;color:#888;margin-top:2px}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #eef0f3;white-space:nowrap}
+th{color:#888;font-weight:600;font-size:12px;position:sticky;top:0;background:#fff}
+tr.row:hover{background:#f0f6ff;cursor:pointer}
+.tblbox{overflow:auto;max-height:62vh}
+.mono{font-family:ui-monospace,Menlo,monospace}
+.pg{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px}
+.muted{color:#999}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:16px;z-index:9}
+.modal .box{background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:90vh;overflow:auto;padding:18px}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0}.kv .k{color:#888}
+#login{max-width:360px;margin:10vh auto}
+canvas{width:100%;height:auto;border:1px solid #eee;border-radius:8px;margin-top:8px}
+</style></head><body>
+
+<div id="login" class="card" style="display:none">
+  <h2 style="margin:0 0 14px">🐳 鲸测云 测试数据后台</h2>
+  <label>账号</label><input id="lu" value="admin" autocomplete="username">
+  <div style="height:10px"></div>
+  <label>密码</label><input id="lp" type="password" autocomplete="current-password">
+  <div style="height:14px"></div>
+  <button id="btnLogin" style="width:100%">登录</button>
+  <div id="lerr" style="color:#e0245e;margin-top:10px;font-size:13px"></div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="hd"><div><b>🐳 鲸测云 测试数据后台</b><span class="v" id="ver"></span></div>
+    <button class="ghost" id="btnLogout">退出</button></div>
+  <div class="wrap">
+    <div class="stats" id="stats"></div>
+    <div class="card">
+      <div class="filters">
+        <div><label>设备序列号</label><input id="fserial" placeholder="JCY-..."></div>
+        <div><label>电池码</label><input id="fcode" placeholder="模糊匹配"></div>
+        <div><label>操作员</label><input id="foper" placeholder="工号/姓名"></div>
+        <div><label>起始日期</label><input id="ffrom" type="date"></div>
+        <div><label>结束日期</label><input id="fto" type="date"></div>
+        <div style="display:flex;gap:8px"><button id="btnQ" style="flex:1">查询</button><button class="ghost" id="btnExp">导出CSV</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b>测试记录</b><span class="muted" id="cnt"></span></div>
+      <div class="tblbox"><table><thead><tr>
+        <th>#</th><th>设备序列号</th><th>电池码</th><th>Rs(mΩ)</th><th>Rct(mΩ)</th><th>L(nH)</th><th>温度</th><th>电压</th><th>操作员</th><th>测量时间</th><th>📷</th>
+      </tr></thead><tbody id="rows"></tbody></table></div>
+      <div class="pg"><button class="ghost" id="prev">上一页</button><span id="pginfo" class="muted"></span><button class="ghost" id="next">下一页</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal"><div class="box">
+  <div style="display:flex;justify-content:space-between;align-items:center"><b id="mTitle">记录</b><button class="ghost" id="mClose">关闭</button></div>
+  <div id="mBody"></div>
+</div></div>
+
+<script>
+const API='/battery-api';
+let TK=localStorage.getItem('jcy_admin_tk')||'';
+let page=0,PAGE=100,lastTotal=0;
+const $=id=>document.getElementById(id);
+$('ver').textContent='v1.0';
+
+async function api(path,opt={}){
+  opt.headers=Object.assign({'X-Admin-Token':TK},opt.headers||{});
+  const r=await fetch(API+path,opt);
+  if(r.status===401){logout();throw new Error('未登录');}
+  return r;
+}
+function show(view){$('login').style.display=view==='login'?'block':'none';$('app').style.display=view==='app'?'block':'none';}
+function logout(){TK='';localStorage.removeItem('jcy_admin_tk');show('login');}
+
+$('btnLogin').onclick=async()=>{
+  $('lerr').textContent='';
+  try{const r=await fetch(API+'/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:$('lu').value,pass:$('lp').value})});
+    const j=await r.json();
+    if(!j.ok){$('lerr').textContent=j.err||'登录失败';return;}
+    TK=j.token;localStorage.setItem('jcy_admin_tk',TK);show('app');boot();
+  }catch(e){$('lerr').textContent='网络错误:'+e.message;}
+};
+$('lp').addEventListener('keydown',e=>{if(e.key==='Enter')$('btnLogin').click();});
+$('btnLogout').onclick=logout;
+
+function qstr(){
+  const p=new URLSearchParams();
+  if($('fserial').value.trim())p.set('serial',$('fserial').value.trim());
+  if($('fcode').value.trim())p.set('code',$('fcode').value.trim());
+  if($('foper').value.trim())p.set('operator',$('foper').value.trim());
+  if($('ffrom').value)p.set('from',$('ffrom').value);
+  if($('fto').value)p.set('to',$('fto').value);
+  return p;
+}
+const mo=v=>v==null?'—':(v/1000).toFixed(3);
+async function loadStats(){
+  try{const j=await(await api('/admin/stats')).json();
+    $('stats').innerHTML=[['总记录',j.total],['设备数',j.devices],['电池码数',j.codes],['近7天',j.last7]]
+      .map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  }catch(e){}
+}
+async function loadRows(){
+  const p=qstr();p.set('limit',PAGE);p.set('offset',page*PAGE);
+  const j=await(await api('/admin/list?'+p)).json();
+  if(!j.ok)return;lastTotal=j.total;
+  $('cnt').textContent='共 '+j.total+' 条';
+  $('rows').innerHTML=j.rows.map(r=>`<tr class="row" data-id="${r.id}">
+    <td>${r.id}</td><td class="mono">${r.device_serial||'—'}</td><td>${r.battery_code||''}</td>
+    <td>${mo(r.rs)}</td><td>${mo(r.rct)}</td><td>${r.l_nh??'—'}</td>
+    <td>${r.temp??'—'}</td><td>${r.volt??'—'}</td><td>${r.operator||r.user_phone||'—'}</td>
+    <td>${(r.measured_at||'').replace('T',' ').slice(0,19)}</td>
+    <td>${r.photo_path?'📷':''}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">无记录</td></tr>';
+  [...document.querySelectorAll('tr.row')].forEach(tr=>tr.onclick=()=>detail(tr.dataset.id));
+  const from=j.total?page*PAGE+1:0,to=Math.min((page+1)*PAGE,j.total);
+  $('pginfo').textContent=from+'–'+to+' / '+j.total;
+  $('prev').disabled=page<=0;$('next').disabled=to>=j.total;
+}
+$('btnQ').onclick=()=>{page=0;loadRows();};
+$('prev').onclick=()=>{if(page>0){page--;loadRows();}};
+$('next').onclick=()=>{if((page+1)*PAGE<lastTotal){page++;loadRows();}};
+$('btnExp').onclick=async()=>{
+  const p=qstr();const r=await api('/admin/export?'+p);const b=await r.blob();
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='jcy_records_'+Date.now()+'.csv';a.click();
+};
+
+async function detail(id){
+  const j=await(await api('/admin/record?id='+id)).json();if(!j.ok||!j.row)return;
+  const r=j.row;$('mTitle').textContent='记录 #'+r.id;
+  const kv=(k,v)=>`<div class="kv"><span class="k">${k}</span><span>${v??'—'}</span></div>`;
+  let h=kv('设备序列号',r.device_serial)+kv('电池码',r.battery_code)+kv('操作员',r.operator||r.user_phone)
+    +kv('Rs',mo(r.rs)+' mΩ')+kv('Rct',mo(r.rct)+' mΩ')+kv('电感',(r.l_nh??'—')+' nH')
+    +kv('温度',r.temp)+kv('电压',r.volt)+kv('设备',r.device_id)+kv('测量时间',(r.measured_at||'').replace('T',' ').slice(0,19));
+  if(r.photo_path)h+=`<div style="margin-top:10px"><a href="/battery-photos/${r.photo_path}" target="_blank"><img src="/battery-photos/${r.photo_path}" style="max-width:100%;border-radius:8px"></a></div>`;
+  h+='<canvas id="ny" width="600" height="380"></canvas>';
+  $('mBody').innerHTML=h;$('modal').style.display='flex';
+  try{const sp=JSON.parse(r.spectrum_json||'null');if(sp&&sp.re&&sp.re.length)drawNyquist(sp);}catch(e){}
+}
+function drawNyquist(sp){
+  const c=$('ny'),x=c.getContext('2d'),W=c.width,H=c.height,P=44;
+  const re=sp.re,im=sp.im.map(v=>-v);
+  const xmn=Math.min(...re),xmx=Math.max(...re),ymn=Math.min(0,...im),ymx=Math.max(...im);
+  const sx=v=>P+(v-xmn)/((xmx-xmn)||1)*(W-2*P),sy=v=>H-P-(v-ymn)/((ymx-ymn)||1)*(H-2*P);
+  x.clearRect(0,0,W,H);x.strokeStyle='#ddd';x.strokeRect(P,P/2,W-1.5*P,H-1.5*P);
+  x.fillStyle='#888';x.font='11px sans-serif';x.fillText("Z' (Re) µΩ",W/2-30,H-8);
+  x.save();x.translate(12,H/2+30);x.rotate(-Math.PI/2);x.fillText("-Z'' (Im) µΩ",0,0);x.restore();
+  x.strokeStyle='#0a66ff';x.lineWidth=2;x.beginPath();
+  re.forEach((v,i)=>{const px=sx(v),py=sy(im[i]);i?x.lineTo(px,py):x.moveTo(px,py);});x.stroke();
+  x.fillStyle='#0a66ff';re.forEach((v,i)=>{x.beginPath();x.arc(sx(v),sy(im[i]),3,0,7);x.fill();});
+}
+$('mClose').onclick=()=>$('modal').style.display='none';
+$('modal').onclick=e=>{if(e.target===$('modal'))$('modal').style.display='none';};
+
+function boot(){loadStats();page=0;loadRows();}
+// 自动登录(已有token)
+(async()=>{
+  if(TK){try{const r=await fetch(API+'/admin/stats',{headers:{'X-Admin-Token':TK}});if(r.ok){show('app');boot();return;}}catch(e){}}
+  show('login');
+})();
+</script></body></html>
