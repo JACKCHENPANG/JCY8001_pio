@@ -1,0 +1,402 @@
+<!DOCTYPE html><html lang="zh"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>不拆包测一致性 · 鲸测云</title>
+<style>
+ html,body{margin:0;padding:0;background:#f2f2f7;font-family:-apple-system,"PingFang SC",sans-serif;color:#1c1c1e}
+ .nav{height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:16px;font-weight:700;background:#0071e3;color:#fff}
+ .nav a{color:#fff;text-decoration:none;font-size:14px;font-weight:400}
+ .card{background:#fff;border-radius:14px;padding:16px;margin:14px}
+ .row{display:flex;justify-content:space-between;align-items:center;padding:8px 0}
+ .lbl{color:#8e8e93;font-size:14px}.val{font-size:16px;font-weight:600}
+ .title{font-size:16px;font-weight:700;margin-bottom:6px}
+ button{font-size:14px;border:none;border-radius:10px;padding:10px 16px;background:#0071e3;color:#fff}
+ button:disabled{background:#b0c8e8}
+ .ghost{background:#eef;color:#0071e3}
+ .full{width:100%;padding:13px;font-size:15px;margin-top:8px}
+ input{font-size:15px;text-align:right;border:none;border-bottom:1px solid #ddd;width:45%}
+ canvas{width:100%;max-width:340px;display:block;margin:8px auto;background:#fff}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ td{padding:5px 2px}
+ .ok{color:#34c759}.bad{color:#ff3b30}
+</style></head><body>
+<div class="nav"><span>🐳 不拆包测一致性</span><a href="/battery-test/">‹ 单芯测试</a></div>
+
+<div class="card" id="connCard">
+  <div class="row"><div class="title">设备</div><button id="btnConn">连接蓝牙</button></div>
+  <div class="row"><span class="lbl">状态</span><span class="val" id="st">未连接</span></div>
+</div>
+
+<!-- setup -->
+<div class="card" id="setup" style="display:none">
+  <div class="title">设置</div>
+  <div class="row"><span class="lbl">串数 N *</span><input id="n" type="number" value="4"></div>
+  <div class="row"><span class="lbl">电池规格</span><input id="spec" placeholder="可选"></div>
+  <div class="row"><span class="lbl">Rct 偏差范围 %</span><input id="tol" type="number" value="15"></div>
+  <div class="row"><span class="lbl">RMS 可用阈值 %</span><input id="rmsThr" type="number" value="5"></div>
+  <button class="full" id="btnStart">开始</button>
+</div>
+
+<!-- measure -->
+<div class="card" id="measure" style="display:none">
+  <div class="title" id="mTitle">逐串测量</div>
+  <canvas id="pin" width="340" height="96"></canvas>
+  <div id="prompt" style="font-size:14px;margin:10px 0;color:#1c1c1e"></div>
+  <button class="full" id="btnConfirm">确认已插好, 开始测量</button>
+  <div class="row"><span class="lbl">进度</span><span class="val" id="cProg" style="font-size:13px">—</span></div>
+</div>
+
+<!-- done -->
+<div class="card" id="done" style="display:none">
+  <div class="title" id="dTitle">整包一致性</div>
+  <div id="badText" style="font-size:14px;margin-bottom:10px"></div>
+  <table id="resTbl"></table>
+  <button class="full ghost" id="btnCopy">复制报告</button>
+  <button class="full" id="btnSavePack">存服务器</button>
+  <button class="full ghost" id="btnRestart">重新开始</button>
+  <div class="row"><span class="lbl"></span><span class="val" id="saveSt" style="font-size:13px"></span></div>
+</div>
+
+<div class="card" style="font-size:12px;color:#8e8e93;text-align:center">
+ 鲸测云科技 · 不拆包一致性 · 版本 <span id="ver"></span><br>第一串固件自动选档并锁定, 后续串复用同档(同包同型号)
+</div>
+
+<script>
+'use strict';
+const APP_VERSION='v1.0.0 (2026-06-04)';
+const API_BASE='/battery-api', API_TOKEN='jcy8001-prod-7f3a2c9b5e';
+// ===== Modbus =====
+const SID=0x01;
+function crc16(b,len){len=(len===undefined)?b.length:len;let c=0xFFFF;for(let i=0;i<len;i++){c^=b[i];for(let k=0;k<8;k++)c=(c&1)?((c>>1)^0xA001):(c>>1);}return c&0xFFFF;}
+function withCrc(a){const c=crc16(a,a.length);return new Uint8Array(a.concat([c&0xFF,(c>>8)&0xFF]));}
+function readHolding(r,n){return withCrc([SID,3,(r>>8)&0xFF,r&0xFF,(n>>8)&0xFF,n&0xFF]);}
+function writeReg(r,v){return withCrc([SID,6,(r>>8)&0xFF,r&0xFF,(v>>8)&0xFF,v&0xFF]);}
+function writeCoil(a,on){return withCrc([SID,5,(a>>8)&0xFF,a&0xFF,on?0xFF:0,0]);}
+function parseRead(buf){if(!buf||buf.length<5)return{ok:false};if(buf[0]!==SID)return{ok:false};if(buf[1]&0x80)return{ok:false};const nb=buf[2];if(buf.length<3+nb+2)return{ok:false};if(crc16(buf,3+nb)!==(buf[3+nb]|(buf[3+nb+1]<<8)))return{ok:false};const regs=[];for(let i=0;i<nb;i+=2)regs.push((buf[3+i]<<8)|buf[3+i+1]);return{ok:true,regs};}
+function regs64(regs){let v=0n;for(let i=0;i<4;i++)v=(v<<16n)|BigInt(regs[i]&0xFFFF);if(v>>63n)v-=(1n<<64n);return Number(v)/100000.0;}
+const REG={SAMP_RES:0x40C0,ZM_GAIN:0x4280,AVG:0x4040,ZM_FAST:0x4340,ZM_MODE:0x4300,AUTORANGE:0x4380,SWEEP_TABLE:0x4400,SWEEP_COUNT:0x43C0,SWEEP_STATE:0x3E40,SWEEP_DONE:0x3E41,SWEEP_RE:0x3400,SWEEP_IM:0x3500};
+const COIL={SWEEP:0x00C0};
+// 快扫频点表(高频->低频, 到~1Hz, 12点) M/E码
+const FAST_CODES=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070E,0x0806,0x070A];
+const _F=125000/(2**24); function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
+// ===== 分析 (注入 analysis.js) =====
+// EIS 分析 (微信小程序 / Node 通用纯 JS)
+// 移植自 tools/eis_nyquist.py + tools/eis_ecm.py。
+// 约定: re/im 单位 μΩ, im 已是 -Z'' (Z = re + j*(-im))。
+
+'use strict';
+
+// ── 夹具串联电感 L 拟合 (高频 Z''≈ωL, 最小二乘过原点) ──
+function fitInductance(hz, re, im, hfmin) {
+  hfmin = hfmin || 300;
+  let num = 0, den = 0;
+  const Li = [];
+  for (let k = 0; k < hz.length; k++) {
+    if (hz[k] < hfmin) continue;
+    const w = 2 * Math.PI * hz[k];
+    const zpp = -im[k] * 1e-6;          // Z'' in Ω
+    num += zpp * w; den += w * w;
+    Li.push(zpp / w);
+  }
+  if (Li.length < 2) return { L: null, cv: null, n: Li.length };
+  const L = num / den;                  // H
+  const mean = Li.reduce((a, b) => a + b, 0) / Li.length;
+  const sd = Math.sqrt(Li.reduce((a, b) => a + (b - mean) * (b - mean), 0) / Li.length);
+  return { L: L, L_nH: L * 1e9, cv: mean ? sd / mean : 0, n: Li.length };
+}
+
+// ── 高斯消元解 n×n ──
+function solveLin(A, b) {
+  const n = b.length;
+  const M = A.map((row, i) => row.slice().concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-15) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+
+// ── 找实部最低点 (Z'min = 高频伪迹边界, 之上的点为互感伪迹) ──
+function findArtifact(re) {
+  let iMin = 0;
+  for (let k = 1; k < re.length; k++) if (re[k] < re[iMin]) iMin = k;
+  return iMin;                          // 列表按 HF->LF, [0,iMin) = 伪迹
+}
+
+// ── Rct 半圆 Kasa 圆拟合, 返回 Rs(左截距)/Rct(直径) ──
+function semicircleFit(hz, re, imc, iMin) {
+  const trusted = [];
+  for (let k = iMin; k < re.length; k++) trusted.push(k);
+  if (trusted.length < 4) return { Rs: re[iMin], Rct: null, circle: null };
+  // Rct 弧峰 = 中频 imc 局部极大; 限定 hz>=5 避开低频 Warburg 上翘尖
+  const cand = trusted.filter(k => hz[k] >= 5);
+  const pool = cand.length ? cand : trusted;
+  let peak = pool[0];
+  for (const k of pool) if (imc[k] > imc[peak]) peak = k;
+  // 峰后第一个谷 = Warburg 起点
+  let we = re.length - 1;
+  for (let k = peak; k < re.length - 1; k++) { if (imc[k + 1] > imc[k]) { we = k; break; } }
+  const arc = [];
+  for (let k = iMin; k <= we; k++) arc.push(k);
+  if (arc.length < 4) return { Rs: re[iMin], Rct: null, circle: null };
+  // Kasa: x²+y²+Dx+Ey+F=0
+  let sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0, sxz = 0, syz = 0, sz = 0;
+  const m = arc.length;
+  for (const k of arc) {
+    const x = re[k], y = imc[k], z = x * x + y * y;
+    sxx += x * x; sxy += x * y; syy += y * y; sx += x; sy += y;
+    sxz += x * z; syz += y * z; sz += z;
+  }
+  const sol = solveLin([[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, m]], [-sxz, -syz, -sz]);
+  if (!sol) return { Rs: re[iMin], Rct: null, circle: null };
+  const [D, E, F] = sol;
+  const disc = D * D - 4 * F;
+  if (disc <= 0) return { Rs: re[iMin], Rct: null, circle: null };
+  const r1 = (-D - Math.sqrt(disc)) / 2, r2 = (-D + Math.sqrt(disc)) / 2;
+  const Rs = Math.min(r1, r2), Rsum = Math.max(r1, r2);
+  const xc = -D / 2, yc = -E / 2;
+  return { Rs: Rs, Rct: Rsum - Rs, circle: { xc: xc, yc: yc, R: Math.sqrt(xc * xc + yc * yc - F) } };
+}
+
+// ── 完整分析: L + 补偿 + 伪迹 + Rs/Rct ──
+function analyze(hz, re, im, opts) {
+  opts = opts || {};
+  const out = { L_nH: null, cv: null, imc: im.slice(), artifact: [], Rs: null, Rct: null, circle: null };
+  if (hz.length < 4) return out;
+  const f = fitInductance(hz, re, im, opts.hfmin);
+  if (f.L == null) return out;
+  // L≤0 = 高频无感性尾(高内阻电芯, 电感可忽略) → 不补偿
+  const L = f.L > 0 ? f.L : 0;
+  out.L_nH = f.L > 0 ? f.L_nH : 0; out.cv = f.L > 0 ? f.cv : null;
+  const imc = hz.map((h, k) => im[k] + 2 * Math.PI * h * L * 1e6);
+  out.imc = imc;
+  const iMin = findArtifact(re);
+  for (let k = 0; k < iMin; k++) out.artifact.push(k);
+  const sc = semicircleFit(hz, re, imc, iMin);
+  out.Rs = sc.Rs; out.Rct = sc.Rct; out.circle = sc.circle;
+  return out;
+}
+
+// ── 复数辅助 ──
+function cAdd(a, b) { return [a[0] + b[0], a[1] + b[1]]; }
+function cMul(a, b) { return [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]; }
+function cInv(a) { const d = a[0] * a[0] + a[1] * a[1]; return [a[0] / d, -a[1] / d]; }
+// (jω)^n = ω^n (cos(nπ/2) + j sin(nπ/2))
+function jwPow(w, n) { const m = Math.pow(w, n), t = n * Math.PI / 2; return [m * Math.cos(t), m * Math.sin(t)]; }
+
+// ECM 模型 Z(ω) = jωL + Rs + [CPE ‖ (Rct + Zw)]   (SI: Ω,H,F)
+function ecmModel(p, w) {
+  const L = p[0], Rs = p[1], Rct = p[2], Q = p[3], n = p[4], sig = p[5];
+  const jwn = jwPow(w, n);                          // (jω)^n
+  const Ycpe = [Q * jwn[0], Q * jwn[1]];            // Y_CPE = Q(jω)^n
+  const jwm = jwPow(w, -0.5);
+  const Zw = [sig * jwm[0], sig * jwm[1]];          // Warburg
+  const Zrw = [Rct + Zw[0], Zw[1]];
+  const Yp = cAdd(Ycpe, cInv(Zrw));                 // CPE ‖ (Rct+Zw) 的导纳
+  const Zp = cInv(Yp);
+  return cAdd([Rs, w * L], Zp);                     // jωL 的实部 0, 虚部 ωL
+}
+
+// ── ECM 拟合: Levenberg-Marquardt, 相对残差, 剔高频伪迹后拟合 ──
+function ecmFit(hz, re, im) {
+  const iMin = findArtifact(re);
+  const idx = [];
+  for (let k = iMin; k < hz.length; k++) idx.push(k);
+  if (idx.length < 6) return null;
+  const w = idx.map(k => 2 * Math.PI * hz[k]);
+  const Zr = idx.map(k => re[k] * 1e-6);            // Ω
+  const Zi = idx.map(k => -im[k] * 1e-6);           // Z'' = -im
+  const mag = idx.map((_, j) => Math.hypot(Zr[j], Zi[j]) || 1e-12);
+
+  function residuals(p) {
+    const r = [];
+    for (let j = 0; j < w.length; j++) {
+      const Zm = ecmModel(p, w[j]);
+      r.push((Zm[0] - Zr[j]) / mag[j]);
+      r.push((Zm[1] - Zi[j]) / mag[j]);
+    }
+    return r;
+  }
+  function cost(r) { return r.reduce((a, b) => a + b * b, 0); }
+
+  // 初值 + 边界
+  // 上界按电芯量级自适应 (亚mΩ 低阻 ~ 几十mΩ 高阻三元都覆盖)
+  const Rmax = Math.max(re[re.length - 1] * 1e-6 * 5, 1e-2);
+  const Rs0 = Math.min(re[iMin] * 1e-6, Rmax * 0.9);
+  const Rct0 = Math.min(Math.max((re[re.length - 1] - re[iMin]) * 1e-6 * 0.8, 1e-5), Rmax * 0.9);
+  let p = [2e-7, Rs0, Rct0, 10.0, 0.85, 5e-5];
+  const lb = [1e-9, 1e-6, 1e-6, 1e-6, 0.3, 0.0];
+  const ub = [1e-6, Rmax, Rmax, 1e6, 1.0, 1e0];
+  const clamp = q => q.map((v, i) => Math.min(Math.max(v, lb[i]), ub[i]));
+  p = clamp(p);
+
+  let lambda = 1e-3;
+  let r = residuals(p), c = cost(r);
+  const N = p.length;
+  for (let iter = 0; iter < 120; iter++) {
+    // 数值 Jacobian
+    const J = r.map(() => new Array(N).fill(0));
+    for (let i = 0; i < N; i++) {
+      const dp = Math.max(Math.abs(p[i]) * 1e-6, 1e-12);
+      const pp = p.slice(); pp[i] += dp;
+      const rp = residuals(pp);
+      for (let k = 0; k < r.length; k++) J[k][i] = (rp[k] - r[k]) / dp;
+    }
+    // JtJ, Jtr
+    const JtJ = Array.from({ length: N }, () => new Array(N).fill(0));
+    const Jtr = new Array(N).fill(0);
+    for (let k = 0; k < r.length; k++) {
+      for (let i = 0; i < N; i++) {
+        Jtr[i] += J[k][i] * r[k];
+        for (let j = 0; j < N; j++) JtJ[i][j] += J[k][i] * J[k][j];
+      }
+    }
+    let improved = false;
+    for (let tryi = 0; tryi < 8; tryi++) {
+      const A = JtJ.map((row, i) => row.map((v, j) => (i === j ? v * (1 + lambda) : v)));
+      const dp = solveLin(A, Jtr.map(v => -v));
+      if (!dp) { lambda *= 10; continue; }
+      const pn = clamp(p.map((v, i) => v + dp[i]));
+      const rn = residuals(pn), cn = cost(rn);
+      if (cn < c) { p = pn; r = rn; c = cn; lambda = Math.max(lambda / 3, 1e-9); improved = true; break; }
+      lambda *= 10;
+    }
+    if (!improved && lambda > 1e7) break;
+  }
+  const rms = Math.sqrt(2 * c / r.length) * 100;   // 每点复数 (r.length=2N), 与 PC 工具同口径
+  const [L, Rs, Rct, Q, n, sig] = p;
+  const Cdl = Math.pow(Q * Math.pow(1 / Rs + 1 / Rct, n - 1), 1 / n);
+  return {
+    L: L, L_nH: L * 1e9, Rs: Rs, Rs_uOhm: Rs * 1e6, Rct: Rct, Rct_uOhm: Rct * 1e6,
+    Q: Q, n: n, sig: sig, Cdl: Cdl, rms: rms, iMin: iMin
+  };
+}
+
+// ── 整包一致性: 以 Rct 为主, 算中位数+偏差, 标超差 ──
+function consistency(rcts, tolPct) {
+  const sorted = rcts.slice().sort((a, b) => a - b);
+  const med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  const dev = rcts.map(v => (med ? (v - med) / med * 100 : 0));
+  const bad = [];
+  dev.forEach((d, i) => { if (Math.abs(d) > tolPct) bad.push({ i: i, dev: d }); });
+  return { median: med, dev: dev, bad: bad };
+}
+
+const API = { fitInductance, analyze, semicircleFit, ecmFit, ecmModel, consistency, findArtifact };
+if (typeof module !== 'undefined' && module.exports) module.exports = API;   // Node 测试
+// 小程序: const A = require('../../utils/analysis.js')
+
+const A = API;
+// ===== Web Bluetooth =====
+const SVC=0xffe0,CHR=0xffe1; let gChar=null,rxBuf=[];
+function onN(e){const dv=e.target.value;for(let i=0;i<dv.byteLength;i++)rxBuf.push(dv.getUint8(i));}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+async function bleConnect(){
+  const d=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'JDY'}],optionalServices:[SVC]});
+  const s=await(await d.gatt.connect()).getPrimaryService(SVC);
+  gChar=await s.getCharacteristic(CHR); await gChar.startNotifications();
+  gChar.addEventListener('characteristicvaluechanged',onN);
+  d.addEventListener('gattserverdisconnected',()=>{gChar=null;$('st').textContent='已断开';});
+}
+async function txn(frame,respLen,to){to=to||4000;for(let a=0;a<2;a++){rxBuf=[];await gChar.writeValueWithoutResponse(frame);const t0=Date.now();while(rxBuf.length<respLen&&Date.now()-t0<to)await sleep(40);if(rxBuf.length>=respLen)break;await sleep(150);}return new Uint8Array(rxBuf);}
+async function rd(reg,cnt){const r=await txn(readHolding(reg,cnt),5+2*cnt);const p=parseRead(r);if(!p.ok)throw new Error('rd 0x'+reg.toString(16));return p.regs;}
+async function w06(reg,val){await txn(writeReg(reg,val),8);}
+async function coil(on){await txn(writeCoil(COIL.SWEEP,on),8);}
+// 逐寄存器写频点表(避BLE分帧), 快扫, 第一颗auto锁档/后续锁档
+async function runSweep(opts){
+  const N=FAST_CODES.length;
+  if(opts.auto){await w06(REG.AUTORANGE,1);}else{await w06(REG.AUTORANGE,0);await w06(REG.SAMP_RES,opts.samp);}
+  await w06(REG.ZM_GAIN,1);await w06(REG.AVG,opts.avg||1);await w06(REG.ZM_FAST,1);await w06(REG.ZM_MODE,0);
+  for(let i=0;i<N;i++)await w06(REG.SWEEP_TABLE+i,FAST_CODES[i]);
+  await w06(REG.SWEEP_COUNT,N);
+  await coil(false);await sleep(150);await coil(true);
+  const hz=[],re=[],im=[];let done=0,fails=0;const t0=Date.now();
+  while(Date.now()-t0<120000){
+    try{
+      const comp=Math.min((await rd(REG.SWEEP_DONE,1))[0],N);
+      while(done<comp){const rr=regs64(await rd(REG.SWEEP_RE+done*4,4)),ii=regs64(await rd(REG.SWEEP_IM+done*4,4));hz.push(codeToHz(FAST_CODES[done]));re.push(rr);im.push(ii);done++;if(opts.onPoint)opts.onPoint(done,N);}
+      const st=(await rd(REG.SWEEP_STATE,1))[0];fails=0;
+      if(st===2){const c2=Math.min((await rd(REG.SWEEP_DONE,1))[0],N);while(done<c2){const rr=regs64(await rd(REG.SWEEP_RE+done*4,4)),ii=regs64(await rd(REG.SWEEP_IM+done*4,4));hz.push(codeToHz(FAST_CODES[done]));re.push(rr);im.push(ii);done++;}break;}
+      if(st===3)break;
+    }catch(e){fails++;await sleep(600);if(fails>30)break;continue;}
+    await sleep(300);
+  }
+  try{await coil(false);}catch(e){}
+  let gear=null; if(opts.auto){try{const s=(await rd(REG.SAMP_RES,1))[0];gear={sel:s,R:[10,5,1][s]||10};}catch(e){}}
+  return {hz,re,im,gear};
+}
+// ===== UI =====
+const $=id=>document.getElementById(id);
+let results=[],lockedGear=null,N=4,tol=15,rmsThr=5,idx=1;
+$('btnConn').onclick=async()=>{try{$('st').textContent='连接中...';await bleConnect();$('st').textContent='已连接 (BLE)';$('st').className='val ok';$('setup').style.display='block';}catch(e){$('st').textContent='连接失败:'+e.message;}};
+$('btnStart').onclick=()=>{
+  N=Math.max(1,parseInt($('n').value)||1);tol=parseFloat($('tol').value)||15;rmsThr=parseFloat($('rmsThr').value)||5;
+  results=[];lockedGear=null;idx=1;$('setup').style.display='none';$('done').style.display='none';$('measure').style.display='block';showCell(1);
+};
+function showCell(k){idx=k;$('mTitle').textContent='逐串测量 ('+k+'/'+N+')';
+  $('prompt').innerHTML='第 <b>'+k+'/'+N+'</b> 串：探针插 <b style="color:#cf222e">B'+(k-1)+'(+)</b> 和 <b style="color:#0071e3">B'+k+'(−)</b>，注意正负';
+  drawPin(N,k);$('cProg').textContent='—';}
+function drawPin(n,active){const c=$('pin'),x=c.getContext('2d'),W=c.width,H=c.height,m=24;const npin=n+1;
+  x.fillStyle='#fff';x.fillRect(0,0,W,H);const step=(W-2*m)/Math.max(npin-1,1),cy=42,r=Math.min(13,step*0.32);
+  for(let i=0;i<npin;i++){const cx=m+i*step,isP=(i===active-1),isM=(i===active);
+    x.beginPath();x.fillStyle=isP?'#cf222e':isM?'#0071e3':'#c8c8cc';x.arc(cx,cy,r,0,7);x.fill();
+    x.fillStyle='#333';x.font='10px sans-serif';x.fillText('B'+i,cx-7,cy+r+14);
+    if(isP||isM){x.fillStyle='#fff';x.font='bold 14px sans-serif';x.fillText(isP?'+':'−',cx-4,cy+5);}}}
+$('btnConfirm').onclick=async()=>{
+  if(!gChar){alert('未连接');return;} $('btnConfirm').disabled=true;
+  const first=(lockedGear==null);
+  $('cProg').textContent=first?'自动选档...':('锁档 '+lockedGear.R+'Ω');
+  try{
+    const opts=first?{auto:true,avg:1,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n}
+                    :{auto:false,samp:lockedGear.sel,avg:1,onPoint:(i,n)=>$('cProg').textContent='测点 '+i+'/'+n};
+    const r=await runSweep(opts);
+    if(first&&r.gear){lockedGear=r.gear;}
+    const H=[],R=[],I=[];for(let k=0;k<r.hz.length;k++)if(r.re[k]>0){H.push(r.hz[k]);R.push(r.re[k]);I.push(r.im[k]);}
+    const e=H.length>=6?A.ecmFit(H,R,I):null;
+    if(!e){$('btnConfirm').disabled=false;alert('第'+idx+'串: 拟合失败/点数不足('+H.length+'点), 检查探针接触/正负, 重测');return;}
+    if(e.rms>rmsThr){$('btnConfirm').disabled=false;alert('第'+idx+'串: RMS='+e.rms.toFixed(1)+'% 超阈值'+rmsThr+'%, 接触不良, 重插重测');return;}
+    results.push({k:idx,Rs:e.Rs_uOhm,Rct:e.Rct_uOhm,Cdl:e.Cdl,rms:e.rms});
+    $('btnConfirm').disabled=false;
+    if(idx+1<=N)showCell(idx+1);else finish();
+  }catch(err){$('btnConfirm').disabled=false;alert('第'+idx+'串出错: '+(err.message||err)+', 重测');}
+};
+function finish(){
+  const rcts=results.map(r=>r.Rct);const c=A.consistency(rcts,tol);
+  let html='<tr style="color:#8e8e93"><td>串</td><td>Rs(mΩ)</td><td>Rct(mΩ)</td><td>偏差%</td><td>状态</td></tr>';
+  results.forEach((r,i)=>{const bad=Math.abs(c.dev[i])>tol;
+    html+='<tr style="'+(bad?'background:#ffeceb':'')+'"><td>'+r.k+'</td><td>'+(r.Rs/1000).toFixed(3)+'</td><td>'+(r.Rct/1000).toFixed(3)+'</td><td>'+(c.dev[i]>=0?'+':'')+c.dev[i].toFixed(1)+'</td><td class="'+(bad?'bad':'ok')+'">'+(bad?'超差':'OK')+'</td></tr>';});
+  $('resTbl').innerHTML=html;
+  $('dTitle').textContent='整包一致性 (中位 Rct '+(c.median/1000).toFixed(3)+' mΩ)';
+  $('badText').innerHTML=c.bad.length?('<span class="bad">⚠ 超差串: '+c.bad.map(b=>'第'+(b.i+1)+'串('+(b.dev>=0?'+':'')+b.dev.toFixed(1)+'%)').join('、')+'</span>'):('<span class="ok">✅ 全部在 ±'+tol+'% 内, 一致性良好</span>');
+  $('measure').style.display='none';$('done').style.display='block';$('saveSt').textContent='';
+}
+function reportText(){
+  const c=A.consistency(results.map(r=>r.Rct),tol);
+  let s='鲸测云 JCY8001 不拆包一致性报告\n规格:'+($('spec').value||'-')+'  串数:'+N+'  Rct偏差:±'+tol+'%  中位:'+(c.median/1000).toFixed(3)+'mΩ\n串,Rs_mΩ,Rct_mΩ,偏差%,状态\n';
+  results.forEach((r,i)=>{const bad=Math.abs(c.dev[i])>tol;s+=[r.k,(r.Rs/1000).toFixed(3),(r.Rct/1000).toFixed(3),(c.dev[i]>=0?'+':'')+c.dev[i].toFixed(1),bad?'超差':'OK'].join(',')+'\n';});
+  return s;
+}
+$('btnCopy').onclick=async()=>{try{await navigator.clipboard.writeText(reportText());alert('报告已复制');}catch(e){prompt('手动复制:',reportText());}};
+$('btnRestart').onclick=()=>{$('done').style.display='none';$('setup').style.display='block';};
+$('btnSavePack').onclick=async()=>{
+  const phone=localStorage.getItem('jcy_phone')||'';const c=A.consistency(results.map(r=>r.Rct),tol);
+  $('saveSt').textContent='保存中...';
+  try{
+    const body={user_phone:phone,battery_code:($('spec').value||'PACK')+'-'+new Date().toISOString().slice(5,16).replace(/[-:T]/g,''),
+      rs:results[0]?results[0].Rs:null,rct:c.median,device_id:'JDY-10-pack',
+      raw:{type:'consistency',n:N,tol:tol,median:c.median,cells:results,bad:c.bad},measured_at:new Date().toISOString()};
+    const r=await(await fetch(API_BASE+'/save',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+API_TOKEN},body:JSON.stringify(body)})).json();
+    $('saveSt').textContent=r.ok?('已存整包 #'+r.id):('存失败:'+(r.err||'?'));
+  }catch(e){$('saveSt').textContent='存失败:'+e.message;}
+};
+$('ver').textContent=APP_VERSION;
+if(!navigator.bluetooth){document.querySelector('.nav').firstChild.textContent='不支持Web蓝牙(用安卓Chrome)';}
+</script>
+</body></html>
