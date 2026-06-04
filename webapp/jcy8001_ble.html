@@ -111,7 +111,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.1.3 (2026-06-04)';
+const APP_VERSION='v1.1.4 (2026-06-04)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -389,14 +389,13 @@ function clean(s){const H=[],R=[],I=[];const n=Math.min(s.hz.length,s.re.length,
 // 自动质量判定 + 按需重测: 好→一次过, 差(点不齐/RMS高/圆拟合失败)→自动重测最多maxTries次
 async function measureGood(codes,opts,gate,maxTries,onStatus){
   gate=gate||5;maxTries=maxTries||3;let best=null;
-  const need=Math.max(6,Math.ceil(codes.length*0.7));
   for(let t=1;t<=maxTries;t++){
-    if(onStatus&&t>1)onStatus('质量差,自动重测 '+t+'/'+maxTries+'…');
+    if(onStatus&&t>1)onStatus('有掉点/质量差,自动重测 '+t+'/'+maxTries+'…');
     const s=await sweepCore(codes,opts);const {H,R,I}=clean(s);
     let o=null,e=null,rms=999;
     if(H.length>=6){o=A.analyze(H,R,I);e=A.ecmFit(H,R,I);rms=e?e.rms:999;}
-    const complete=H.length>=need, hasRct=o&&o.Rct!=null;
-    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('点不齐'+H.length+'/'+codes.length):(!hasRct?'圆拟合失败':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
+    const complete=H.length>=codes.length, hasRct=o&&o.Rct!=null;   // 要求全点不掉(绝对干净)
+    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('掉点'+H.length+'/'+codes.length):(!hasRct?'圆拟合失败':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
     if(complete&&hasRct&&rms<gate)return Object.assign(cand,{ok:true,tries:t});
     if(!best||(cand.complete&&!best.complete)||(cand.rms<best.rms))best=cand;
   }
