@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.5 (2026-06-05)';
+const APP_VERSION='v1.3.6 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -456,11 +456,11 @@ $('btnSweep').onclick=async()=>{
       const rsHF=(r.R&&r.R.length)?r.R[0]:(r.o?r.o.Rs:null);
       if(r.H&&r.H.length>=4&&rsHF!=null&&rsHF>3000){
         pStat='高阻电芯('+(rsHF/1000).toFixed(1)+'mΩ),自动延到低频闭合弧…';
-        const r2=await measureGood(FAST,Object.assign({avg:1},base),8,2,(m)=>{pStat=m;});
+        const r2=await measureGood(FAST,Object.assign({avg:1},base),12,2,(m)=>{pStat=m;});  // 高阻三元有Warburg尾, rms 7~10%是正常水平, 门控放12(8太严会无谓重测)
         if(r2.H&&r2.H.length>=8){r=r2;usedBand='较全(低频)';}
       }
     }else{
-      r=await measureGood(codesOf(band),Object.assign({avg:avgOf(band)},base),5,3,(m)=>{pStat=m;});
+      r=await measureGood(codesOf(band),Object.assign({avg:avgOf(band)},base),band==='fast'?12:5,3,(m)=>{pStat=m;});
       usedBand=band==='express'?'极速':'较全';
     }
     clearInterval(timer);
