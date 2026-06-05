@@ -86,7 +86,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0227;   // v2.27 (B: HSI×16=64MHz, 本板HSE不起振; BRR/SPI/delay动态按主频)
+    jcy_fw_version = 0x0227;   // v2.27 (B: HSI×16=64MHz; conv降级实验v2.28失败已回退)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
