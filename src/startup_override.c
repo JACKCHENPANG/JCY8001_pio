@@ -14,6 +14,7 @@ void Default_Handler(void);
 void HardFault_Handler(void);
 void USART1_IRQHandler(void);   /* Modbus RX over J12/BLE (defined in main.c) */
 void USART2_IRQHandler(void);   /* Modbus RX (defined in main.c) */
+void SysTick_Handler(void);     /* 1ms tick (defined in main.c) — ZM真实时间门基准 */
 
 /*
  * Provide a complete vector table in .isr_vector.
@@ -38,7 +39,7 @@ void (* const g_pfnVectors[])(void) = {
     Default_Handler,            /* DebugMon */
     0,                          /* Reserved */
     Default_Handler,            /* PendSV */
-    Default_Handler,            /* SysTick */
+    SysTick_Handler,            /* SysTick */
     /* ── External IRQs (position 0..59) ── */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 0  WWDG, PVD, TAMPER, RTC          */
     Default_Handler, Default_Handler, Default_Handler, Default_Handler,   /* 4  FLASH, RCC, EXTI0, EXTI1        */
