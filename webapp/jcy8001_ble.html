@@ -56,7 +56,7 @@
       <select id="range"><option value="auto">自动挡(首颗定档后锁定,提速)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
     <div class="row" id="gearLockRow" style="display:none;padding-top:0"><span class="lbl" style="font-size:12px">🔒已锁挡</span><span class="val" style="font-size:12px"><span id="gearLockTxt"></span> · <a id="gearReset" style="color:#0071e3;cursor:pointer">重新定档</a></span></div>
     <div class="row"><span class="lbl">扫频范围</span>
-      <select id="band"><option value="sort">分选快测 (Rs+阻抗排序, ~40s, 推荐)</option><option value="express">极速谱 8点 (→7.6Hz, ~30s)</option><option value="fast">精测Rct (闭合弧→0.12Hz, 2-3分钟)</option></select></div>
+      <select id="band"><option value="sort">分选快测 (Rs+阻抗排序, ~30s, 推荐)</option><option value="express">极速谱 8点 (→7.6Hz, ~30s)</option><option value="fast">精测Rct (闭合弧→0.12Hz, 2-3分钟)</option></select></div>
     <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
     <canvas id="nyq" width="340" height="250"></canvas>
     <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
@@ -115,7 +115,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.4.1 (2026-06-05)';
+const APP_VERSION='v1.4.2 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -133,7 +133,7 @@ const FULL=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070
 const FAST_IDX=[0,2,4,5,6,8,10,12,14,16,18,19];           // 展开12点(高频→~1Hz)
 const FAST=FAST_IDX.map(i=>FULL[i]);
 const EXPRESS=[0,2,4,5,6,8,10,12].map(i=>FULL[i]);        // 极速8点(1kHz→7.6Hz), ~28s
-const SORT=[0,2,4,5,6,8,10,12,14,15,16].map(i=>FULL[i]);  // 分选11点(1kHz→0.95Hz), ~40s, 取Rs+低频|Z|排序(不闭合弧不拟合Rct)
+const SORT=[0,2,5,8,12,14,15,16].map(i=>FULL[i]);  // 分选8点(1kHz→0.95Hz), ~30s; HF够拟Rs + 低频到0.95Hz出|Z|排序键(实测8点Rs仍可拟,≤6点拟合失败)
 function codesOf(band){return band==='express'?EXPRESS:band==='sort'?SORT:band==='fast'?FAST:FULL;}
 function avgOf(band){return 1;}        // avg=1 单遍(实测avg=1满扫到0.12Hz=102s Rct与avg=4一致, 弧闭合精度靠扫到弧顶不靠多采; avg=4纯白等3倍)
 const _F=125000/(2**24);function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
