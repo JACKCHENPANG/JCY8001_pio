@@ -55,7 +55,7 @@
     <div class="row"><span class="lbl">挡位</span>
       <select id="range"><option value="auto">自动挡(推荐)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
     <div class="row"><span class="lbl">扫频范围</span>
-      <select id="band"><option value="express">极速 8点 (1kHz→7.6Hz, ~30s)</option><option value="fast">较全 12点 (→1Hz, 较慢)</option></select></div>
+      <select id="band"><option value="auto">自动 (低阻走极速/高阻自动延低频, 推荐)</option><option value="express">极速 8点 (1kHz→7.6Hz, ~30s)</option><option value="fast">较全 12点 (→0.12Hz, 较慢)</option></select></div>
     <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
     <canvas id="nyq" width="340" height="250"></canvas>
     <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.2 (2026-06-05)';
+const APP_VERSION='v1.3.3 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -438,13 +438,26 @@ $('btnSweep').onclick=async()=>{
   $('btnSweep').disabled=true;$('ecm').textContent='';['L','rs','rct','rms'].forEach(i=>$(i).textContent='测量中...');
   try{
     const sel=$('range').value;localStorage.setItem('jcy_range',sel);localStorage.setItem('jcy_band',$('band').value);
-    const codes=codesOf($('band').value);
+    const band=$('band').value;
     // 持续计时: pStat=当前阶段文字, 每0.3s刷"阶段 · Ns" (修: 旧版onTick写进隐藏的dataset, 不显示)
     const t0=Date.now();let pStat='测量中…';
     const timer=setInterval(()=>{$('prog').textContent=pStat+' · '+((Date.now()-t0)/1000).toFixed(0)+'s';},300);
-    const opts={avg:avgOf($('band').value),onPoint:(i,n)=>{pStat='点 '+i+'/'+n;},onTick:()=>{}};
-    if(sel==='auto')opts.auto=true;else{opts.auto=false;opts.samp=parseInt(sel);}
-    const r=await measureGood(codes,opts,5,3,(m)=>{pStat=m;});
+    const base={onPoint:(i,n)=>{pStat='点 '+i+'/'+n;},onTick:()=>{}};
+    if(sel==='auto')base.auto=true;else{base.auto=false;base.samp=parseInt(sel);}
+    let r,usedBand;
+    if(band==='auto'){
+      // 先极速探一遍(快), 看高频Z'量级: 低阻(LFP, <3mΩ)→极速够; 高阻(三元, 弧在低频)→自动延到低频闭合弧
+      r=await measureGood(EXPRESS,Object.assign({avg:1},base),5,3,(m)=>{pStat=m;});usedBand='极速';
+      const rsHF=(r.R&&r.R.length)?r.R[0]:(r.o?r.o.Rs:null);
+      if(r.H&&r.H.length>=4&&rsHF!=null&&rsHF>3000){
+        pStat='高阻电芯('+(rsHF/1000).toFixed(1)+'mΩ),自动延到低频闭合弧…';
+        const r2=await measureGood(FAST,Object.assign({avg:4},base),8,3,(m)=>{pStat=m;});
+        if(r2.H&&r2.H.length>=8){r=r2;usedBand='较全(低频)';}
+      }
+    }else{
+      r=await measureGood(codesOf(band),Object.assign({avg:avgOf(band)},base),5,3,(m)=>{pStat=m;});
+      usedBand=band==='express'?'极速':'较全';
+    }
     clearInterval(timer);
     const el=((Date.now()-t0)/1000).toFixed(0);
     const {H,R,I,o,e}=r;
@@ -455,7 +468,7 @@ $('btnSweep').onclick=async()=>{
     const rms=e?e.rms:null;
     $('rms').innerHTML=rms!=null?('<span class="'+(rms<5?'ok':rms<10?'warn':'bad')+'">'+rms.toFixed(2)+'%'+(rms<5?' 良':rms<10?' 一般':' 差,建议重测')+'</span>'):'—';
     if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
-    $('prog').textContent=(r.ok?'完成':'⚠质量勉强('+r.reason+')')+' '+H.length+'点 用时'+el+'s'+(r.tries>1?' 重测'+r.tries+'次':'');
+    $('prog').textContent=(r.ok?'完成':'⚠质量勉强('+r.reason+')')+' ['+usedBand+'] '+H.length+'点 用时'+el+'s'+(r.tries>1?' 重测'+r.tries+'次':'');
     draw('nyq',H,R,I,o);
     // SOC/温度 归一化 (用 OCV=gVolt, 温度=gTemp)
     const rctRaw=o.Rct!=null?o.Rct:(e?e.Rct_uOhm:null);
