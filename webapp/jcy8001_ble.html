@@ -34,8 +34,8 @@
   <div class="row"><span class="lbl">温度 / 电压</span><span class="val"><span id="tp">—</span> / <span id="vt">—</span></span></div>
   <div class="row"><span class="lbl">固件升级(OTA)</span>
     <span style="display:flex;gap:6px;align-items:center">
-      <label class="ghost" for="otaFile" style="padding:6px 12px;border-radius:8px;font-size:13px">选 .bin</label>
-      <button id="btnOta" class="ghost" disabled style="padding:6px 12px">升级</button>
+      <button id="btnOtaNet" disabled style="padding:6px 12px">升级最新固件</button>
+      <label class="ghost" for="otaFile" style="padding:6px 10px;border-radius:8px;font-size:12px">本地.bin</label>
       <input id="otaFile" type="file" accept=".bin" style="display:none"></span></div>
   <div class="row" id="otaRow" style="display:none"><span class="lbl"></span><span class="val" id="otaSt" style="font-size:12px;color:#0071e3"></span></div>
 </div>
@@ -121,7 +121,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.5.0 (2026-06-05)';
+const APP_VERSION='v1.5.1 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -390,8 +390,7 @@ async function i64(r){return regs64(await rd(r,4));}
 async function w06(r,v){await txn(f06(r,v),8);}
 async function coil(on){await txn(f05(0x00C0,on),8);}
 // ════ 蓝牙 OTA 在线升级 (Modbus bootloader) ════
-async function otaUpgrade(file,onStat){
-  const raw=new Uint8Array(await file.arrayBuffer());
+async function otaUpgrade(raw,onStat){   // raw=Uint8Array 固件
   let data=raw; if(data.length%2){data=new Uint8Array(raw.length+1);data.set(raw);data[raw.length]=0xFF;}
   const len=data.length, crc=crc32(data);
   onStat('固件 '+len+'字节 CRC32='+crc.toString(16).toUpperCase()+', 触发升级…');
@@ -481,7 +480,7 @@ $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect(
   if(gFw>=0x0224){try{const ct=(await rd(REG.CELLTEMP,1))[0];if(ct!==0x8000){let s=ct>32767?ct-65536:ct;gCellTemp=s/10;}}catch(e){}}
   $('tp').textContent=gTemp.toFixed(1)+'℃(芯片)'+(gCellTemp!=null?' / '+gCellTemp.toFixed(1)+'℃(电芯)':'');
   gVolt=(await rd(REG.VOLT,1))[0]/10000;$('vt').textContent=gVolt.toFixed(4)+'V';
-  $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';if(gOtaFile)$('btnOta').disabled=false;
+  $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';$('btnOtaNet').disabled=false;
  }catch(e){setSt('连接失败:'+e.message,false);}};
 // ===== A 单芯 =====
 $('btnSweep').onclick=async()=>{
@@ -631,24 +630,30 @@ $('btnSavePack').onclick=async()=>{const oper=localStorage.getItem('jcy_phone')|
  $('range').addEventListener('change',()=>{localStorage.setItem('jcy_range',$('range').value);showGearLock();});$('band').addEventListener('change',()=>localStorage.setItem('jcy_band',$('band').value));}
 // 重新定档: 清掉锁定的挡, 下次自动挡重新探
 $('gearReset').onclick=()=>{gLockGear=null;localStorage.removeItem('jcy_lockgear');showGearLock();$('prog').textContent='已清挡位, 下次自动挡重新探';};
-// ── 固件 OTA 升级 ──
-let gOtaFile=null;
-$('otaFile').addEventListener('change',e=>{gOtaFile=e.target.files[0]||null;$('btnOta').disabled=!(gOtaFile&&gChar);if(gOtaFile){$('otaRow').style.display='flex';$('otaSt').textContent='已选 '+gOtaFile.name+' ('+gOtaFile.size+'字节)';}});
-$('btnOta').onclick=async()=>{
+// ── 固件 OTA 升级 (平台下载为主 / 本地.bin备用) ──
+async function runOta(getData,label){
   if(!gChar){alert('请先连蓝牙');return;}
-  if(!gOtaFile){alert('请先选 .bin 固件');return;}
-  if(!confirm('确认用 '+gOtaFile.name+' 升级固件？\n升级中勿断电/勿离开页面，约1-2分钟。')) return;
-  $('btnOta').disabled=true;$('otaRow').style.display='flex';
+  if(!confirm('确认'+label+'升级固件？\n升级中勿断电/勿离开页面，约1-2分钟。')) return;
+  $('btnOtaNet').disabled=true;$('otaRow').style.display='flex';
   try{
-    const ver=await otaUpgrade(gOtaFile,(m)=>$('otaSt').textContent=m);
+    $('otaSt').textContent='获取固件…';
+    const data=await getData();
+    const ver=await otaUpgrade(data,(m)=>$('otaSt').textContent=m);
     $('otaSt').innerHTML='<span class="ok">✅ 升级成功, 当前固件 '+ver+'</span>';
     setSt('已连接(BLE)',true);
   }catch(err){
-    $('otaSt').innerHTML='<span class="bad">✗ 升级失败: '+err.message+'（设备在bootloader等待，可重试或有线救援）</span>';
+    $('otaSt').innerHTML='<span class="bad">✗ 升级失败: '+err.message+'（设备在bootloader等待，可重试，或有线救援）</span>';
     gOta=false;
   }
-  $('btnOta').disabled=false;
-};
+  $('btnOtaNet').disabled=!gChar;
+}
+$('btnOtaNet').onclick=()=>runOta(async()=>{
+  const r=await fetch('/battery-fw/firmware-latest.bin',{cache:'no-store'});
+  if(!r.ok)throw new Error('下载固件失败 '+r.status);
+  return new Uint8Array(await r.arrayBuffer());
+},'用平台最新固件');
+$('otaFile').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;
+  runOta(async()=>new Uint8Array(await f.arrayBuffer()),'用本地文件 '+f.name);});
 $('ver').textContent=APP_VERSION;
 if(!navigator.bluetooth){document.querySelector('.nav').textContent='不支持Web蓝牙(用安卓Chrome)';}
 </script></body></html>
