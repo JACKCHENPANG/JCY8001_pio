@@ -92,6 +92,8 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (u.pathname === '/health') return send(res, 200, { ok: true, ts: new Date().toISOString() });
+  // 平台最新固件版本 (发布新固件时同步改这两个常量+替换 fw/firmware-latest.bin)
+  if (u.pathname === '/fw-latest') return send(res, 200, { ok: true, code: 0x0227, version: 'v2.27', file: 'firmware-latest.bin' });
 
   // ===== 管理后台路由 (账号密码 session, 不走 Bearer) =====
   if (req.method === 'POST' && u.pathname === '/admin/login') {

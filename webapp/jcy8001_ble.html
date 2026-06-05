@@ -121,7 +121,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.5.3 (2026-06-05)';
+const APP_VERSION='v1.5.4 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -482,7 +482,7 @@ $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect(
   if(gFw>=0x0224){try{const ct=(await rd(REG.CELLTEMP,1))[0];if(ct!==0x8000){let s=ct>32767?ct-65536:ct;gCellTemp=s/10;}}catch(e){}}
   $('tp').textContent=gTemp.toFixed(1)+'℃(芯片)'+(gCellTemp!=null?' / '+gCellTemp.toFixed(1)+'℃(电芯)':'');
   gVolt=(await rd(REG.VOLT,1))[0]/10000;$('vt').textContent=gVolt.toFixed(4)+'V';
-  $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';$('btnOtaNet').disabled=false;
+  $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';checkFwLatest();
  }catch(e){setSt('连接失败:'+e.message,false);}};
 // ===== A 单芯 =====
 $('btnSweep').onclick=async()=>{
@@ -633,6 +633,16 @@ $('btnSavePack').onclick=async()=>{const oper=localStorage.getItem('jcy_phone')|
 // 重新定档: 清掉锁定的挡, 下次自动挡重新探
 $('gearReset').onclick=()=>{gLockGear=null;localStorage.removeItem('jcy_lockgear');showGearLock();$('prog').textContent='已清挡位, 下次自动挡重新探';};
 // ── 固件 OTA 升级 (平台下载为主 / 本地.bin备用) ──
+let gFwLatest=null;
+async function checkFwLatest(){   // 对比设备当前fw vs 平台最新, 已最新则置灰
+  $('otaRow').style.display='flex';
+  try{
+    const j=await(await fetch(API_BASE+'/fw-latest',{cache:'no-store'})).json();
+    gFwLatest=j;
+    if(gFw>=j.code){ $('btnOtaNet').disabled=true; $('btnOtaNet').textContent='已是最新'; $('otaSt').innerHTML='<span class="ok">已是最新固件 '+j.version+'</span>'; }
+    else { $('btnOtaNet').disabled=false; $('btnOtaNet').textContent='升级最新固件'; $('otaSt').innerHTML='<span class="warn">可升级 → '+j.version+'</span>'; }
+  }catch(e){ $('btnOtaNet').disabled=false; $('btnOtaNet').textContent='升级最新固件'; $('otaSt').textContent='(取最新版本失败, 仍可手动升级)'; }
+}
 async function runOta(getData,label){
   if(!gChar){alert('请先连蓝牙');return;}
   if(!confirm('确认'+label+'升级固件？\n升级中勿断电/勿离开页面，约1-2分钟。')) return;
@@ -643,6 +653,9 @@ async function runOta(getData,label){
     const ver=await otaUpgrade(data,(m)=>$('otaSt').textContent=m);
     $('otaSt').innerHTML='<span class="ok">✅ 升级成功, 当前固件 '+ver+'</span>';
     setSt('已连接(BLE)',true);
+    try{gFw=(await rd(REG.FW,1))[0];}catch(e){}   // 更新当前版本
+    setTimeout(checkFwLatest,800);                // 重新对比(升完应显"已是最新")
+    return;
   }catch(err){
     $('otaSt').innerHTML='<span class="bad">✗ 升级失败: '+err.message+'（设备在bootloader等待，可重试，或有线救援）</span>';
     gOta=false;
