@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.3 (2026-06-05)';
+const APP_VERSION='v1.3.4 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -133,7 +133,7 @@ const FAST_IDX=[0,2,4,5,6,8,10,12,14,16,18,19];           // 展开12点(高频�
 const FAST=FAST_IDX.map(i=>FULL[i]);
 const EXPRESS=[0,2,4,5,6,8,10,12].map(i=>FULL[i]);        // 极速8点(1kHz→7.6Hz), ~28s, 分选用
 function codesOf(band){return band==='express'?EXPRESS:band==='fast'?FAST:FULL;}
-function avgOf(band){return band==='express'?1:4;}        // 极速 avg=1 求快, 其余 avg=4 压噪
+function avgOf(band){return 1;}        // avg=1 单遍(实测avg=1满扫到0.12Hz=102s Rct与avg=4一致, 弧闭合精度靠扫到弧顶不靠多采; avg=4纯白等3倍)
 const _F=125000/(2**24);function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
 // ===== 分析(注入) =====
 // EIS 分析 (微信小程序 / Node 通用纯 JS)
@@ -451,7 +451,7 @@ $('btnSweep').onclick=async()=>{
       const rsHF=(r.R&&r.R.length)?r.R[0]:(r.o?r.o.Rs:null);
       if(r.H&&r.H.length>=4&&rsHF!=null&&rsHF>3000){
         pStat='高阻电芯('+(rsHF/1000).toFixed(1)+'mΩ),自动延到低频闭合弧…';
-        const r2=await measureGood(FAST,Object.assign({avg:4},base),8,3,(m)=>{pStat=m;});
+        const r2=await measureGood(FAST,Object.assign({avg:1},base),8,3,(m)=>{pStat=m;});
         if(r2.H&&r2.H.length>=8){r=r2;usedBand='较全(低频)';}
       }
     }else{
