@@ -13,7 +13,8 @@
 
 volatile uint16_t jcy_ch_count;
 volatile uint16_t jcy_version;
-volatile uint16_t jcy_temp;
+volatile uint16_t jcy_temp;          // 0x3300 芯片die温 (T*10, raw*5/8)
+volatile uint16_t jcy_cell_temp = 0x8000;  // 0x3301 电芯温=外接DS18B20测环境温 (T*10,有符号); 0x8000=未接/无效
 volatile uint16_t jcy_voltage;
 volatile uint16_t jcy_status;
 volatile uint16_t jcy_zm_freq;
@@ -81,7 +82,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0223;   // v2.23 (加设备唯一序列号 UID 寄存器 0x3E10-15)
+    jcy_fw_version = 0x0224;   // v2.24 (加外接DS18B20电芯温寄存器 0x3301; 引脚PB9待Altium确认)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -131,6 +132,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3E2C: return jcy_dnb_phase_dbg;
         case 0x3E30: return jcy_reenum_count;  // DNB 自愈重枚举次数
         case 0x3300: return jcy_temp;
+        case 0x3301: return jcy_cell_temp;   // 电芯温 (外接DS18B20)
         case 0x3340: return jcy_voltage;
         case 0x3380: return jcy_status;
         // 阻抗实部 RE 0x3000~0x3003 / 虚部 IM 0x3080~0x3083: 64位有符号大端, 主机 /100000=μΩ。
@@ -496,6 +498,62 @@ static uint32_t dnb_make_cmd(uint8_t id, uint8_t cmd, uint16_t data) {
 
 static void dnb_delay_cycles(volatile uint32_t n) { while (n--) __asm volatile ("nop"); }
 
+/* ════════════ DS18B20 电芯温(环境温)探头 — 1-Wire 位带, DWT µs 延时 ════════════
+ * 引脚 ⚠️待定(等 Altium 原理图确认空闲且引出的脚): 现占位 PB9。改这 3 个宏即可换脚。
+ * 接法: DQ→该GPIO, 4.7kΩ 上拉到 3.3V, GND/VDD 供电。夹具固定一颗测环境温(电芯静置=电芯温)。 */
+#define DS_GPIO     GPIOB
+#define DS_PIN_N    9
+#define DS_RCC_EN() (RCC->APB2ENR |= RCC_APB2ENR_IOPBEN)
+/* CRH: PB8-15 在 CRH, 每脚4bit. 输出=开漏2MHz(0x6) 放线(拉低); 输入=浮空(0x4) 读/放高(外部上拉拉高) */
+static inline void ds_mode_out(void){ DS_GPIO->CRH = (DS_GPIO->CRH & ~(0xFu<<((DS_PIN_N-8)*4))) | (0x6u<<((DS_PIN_N-8)*4)); }
+static inline void ds_mode_in (void){ DS_GPIO->CRH = (DS_GPIO->CRH & ~(0xFu<<((DS_PIN_N-8)*4))) | (0x4u<<((DS_PIN_N-8)*4)); }
+static inline void ds_low (void){ DS_GPIO->BRR  = (1u<<DS_PIN_N); }
+static inline void ds_rel (void){ DS_GPIO->BSRR = (1u<<DS_PIN_N); }   // 开漏下释放=外部上拉拉高
+static inline uint8_t ds_read(void){ return (DS_GPIO->IDR>>DS_PIN_N)&1u; }
+
+static void dwt_init(void){ CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT=0; DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk; }
+static void delay_us(uint32_t us){ uint32_t t0=DWT->CYCCNT, n=us*72u; while((DWT->CYCCNT-t0)<n){} }  // 72MHz
+
+static uint8_t ds_reset(void){           // 返回1=有presence应答
+    ds_mode_out(); ds_low(); delay_us(480);
+    ds_mode_in();  delay_us(70);
+    uint8_t present = !ds_read();        // 60~240µs内被从机拉低
+    delay_us(410);
+    return present;
+}
+static void ds_wbit(uint8_t b){
+    ds_mode_out(); ds_low();
+    if(b){ delay_us(6);  ds_rel(); delay_us(64); }   // 写1: 拉低<15µs后释放
+    else { delay_us(60); ds_rel(); delay_us(10); }   // 写0: 拉低整个时隙
+}
+static uint8_t ds_rbit(void){
+    ds_mode_out(); ds_low(); delay_us(3);
+    ds_mode_in();  delay_us(10);
+    uint8_t b = ds_read();               // 采样(<15µs窗口内)
+    delay_us(50);
+    return b;
+}
+static void ds_wbyte(uint8_t v){ for(uint8_t i=0;i<8;i++){ ds_wbit(v&1); v>>=1; } }
+static uint8_t ds_rbyte(void){ uint8_t v=0; for(uint8_t i=0;i<8;i++){ v|=ds_rbit()<<i; } return v; }
+
+/* 2 相非阻塞: phase=0 启动转换(SKIP ROM+Convert), phase=1 读温度. DS18B20 12bit 转换需~750ms,
+ * 跨多个 MEASURE_INTERVAL tick, 不阻塞 Modbus. 温度→T*10 (raw16*5/8, 同 0x3300 口径). */
+static uint8_t ds_phase = 0;
+static void ds18b20_poll(void){
+    if(ds_phase==0){
+        if(!ds_reset()){ jcy_cell_temp=0x8000; return; }   // 没接/无应答
+        ds_wbyte(0xCC); ds_wbyte(0x44);                    // SKIP ROM, Convert T
+        ds_phase=1;
+    } else {
+        if(!ds_reset()){ jcy_cell_temp=0x8000; ds_phase=0; return; }
+        ds_wbyte(0xCC); ds_wbyte(0xBE);                    // SKIP ROM, Read Scratchpad
+        uint8_t lo=ds_rbyte(), hi=ds_rbyte();              // 温度 LSB/MSB (1/16℃, 有符号)
+        int16_t raw=(int16_t)((hi<<8)|lo);
+        jcy_cell_temp=(uint16_t)((int32_t)raw*5/8);        // T*10
+        ds_phase=0;
+    }
+}
+
 // 发命令, 返回 id 槽位的 4 字节响应组成的 ulData。head=前导字节数, send_two=发两次。
 static uint32_t dnb_xfer(uint8_t id, uint8_t cmd, uint16_t data,
                          uint16_t head, uint8_t ics, uint8_t send_two) {
@@ -788,6 +846,8 @@ int main(void)
     usart1_init();      // J12 透传蓝牙模块: Modbus over BLE (与 USART2 同协议)
     spi1_init();
     resis_gpio_init();   // 采样电阻量程选通 GPIO (PB5/PB3/PD2)
+    dwt_init();          // DWT 周期计数器 (DS18B20 µs 延时用)
+    DS_RCC_EN(); ds_mode_in();   // DS18B20 引脚: 浮空输入(外部上拉拉高=空闲); 未接探头读到0x8000
 
     // 枚举菊花链 (U6 网关=ID1, U8 测量=ID2), 并 Init 两颗 IC (链长=2)。
     // U8 由硬件 SPI_En=低固定在测量模式, 唤醒后自动进入正常模式持续测量 VM/TM。
@@ -899,6 +959,7 @@ int main(void)
                 } else {
                     dnb_bad_count = 0;
                 }
+                ds18b20_poll();   // 外接电芯温探头 (2相非阻塞: 启动转换/读取交替); 未接=0x3301读0x8000
                 }   // end if(!zm_running) — ZM 进行中跳过 VM/温度读取
 
                 // ── 扫频控制 (coil 0x00C0): 上升沿=启动整段扫频, 下降沿=中止 ──
