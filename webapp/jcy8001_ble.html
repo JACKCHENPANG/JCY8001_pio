@@ -55,7 +55,7 @@
     <div class="row"><span class="lbl">挡位</span>
       <select id="range"><option value="auto">自动挡(推荐)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
     <div class="row"><span class="lbl">扫频范围</span>
-      <select id="band"><option value="auto">自动 (低阻走极速/高阻自动延低频, 推荐)</option><option value="express">极速 8点 (1kHz→7.6Hz, ~30s)</option><option value="fast">较全 12点 (→0.12Hz, 较慢)</option></select></div>
+      <select id="band"><option value="sort">分选快测 (Rs+阻抗排序, ~40s, 推荐)</option><option value="express">极速谱 8点 (→7.6Hz, ~30s)</option><option value="fast">精测Rct (闭合弧→0.12Hz, 2-3分钟)</option></select></div>
     <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
     <canvas id="nyq" width="340" height="250"></canvas>
     <div class="row"><span class="lbl">电感 L</span><span class="val" id="L">—</span></div>
@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.6 (2026-06-05)';
+const APP_VERSION='v1.4.0 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -131,8 +131,9 @@ function serialFrom(regs){let c=~0>>>0;for(const r of regs){for(const b of [(r>>
 const FULL=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070E,0x0806,0x070A,0x0902,0x0706,0x0802,0x0702,0x0602,0x0502,0x0402,0x0302];
 const FAST_IDX=[0,2,4,5,6,8,10,12,14,16,18,19];           // 展开12点(高频→~1Hz)
 const FAST=FAST_IDX.map(i=>FULL[i]);
-const EXPRESS=[0,2,4,5,6,8,10,12].map(i=>FULL[i]);        // 极速8点(1kHz→7.6Hz), ~28s, 分选用
-function codesOf(band){return band==='express'?EXPRESS:band==='fast'?FAST:FULL;}
+const EXPRESS=[0,2,4,5,6,8,10,12].map(i=>FULL[i]);        // 极速8点(1kHz→7.6Hz), ~28s
+const SORT=[0,2,4,5,6,8,10,12,14,15,16].map(i=>FULL[i]);  // 分选11点(1kHz→0.95Hz), ~40s, 取Rs+低频|Z|排序(不闭合弧不拟合Rct)
+function codesOf(band){return band==='express'?EXPRESS:band==='sort'?SORT:band==='fast'?FAST:FULL;}
 function avgOf(band){return 1;}        // avg=1 单遍(实测avg=1满扫到0.12Hz=102s Rct与avg=4一致, 弧闭合精度靠扫到弧顶不靠多采; avg=4纯白等3倍)
 const _F=125000/(2**24);function codeToHz(c){c&=0xFFFF;return (c&0xFF)*(2**((c>>8)&0xFF))*_F;}
 // ===== 分析(注入) =====
@@ -414,9 +415,10 @@ async function measureGood(codes,opts,gate,maxTries,onStatus){
     const complete=H.length>=minPts;
     // 圆拟合(o.Rct)对低阻LFP好; 高阻三元有Warburg尾圆拟合常失败→用ECM的Rct兜底
     const rct=(o&&o.Rct!=null)?o.Rct:((e&&e.Rct_uOhm)?e.Rct_uOhm:null);
-    const hasRct=rct!=null;
-    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('掉点'+H.length+'/'+codes.length):(!hasRct?'无Rct':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
-    if(complete&&hasRct&&rms<gate)return Object.assign(cand,{ok:true,tries:t});
+    // 分选模式: 不拟合/不卡Rct/RMS, 点够即可(快+不重测); 精测模式: 要Rct+RMS达标
+    const hasRct=opts.sort?true:(rct!=null), rmsOk=opts.sort?true:(rms<gate);
+    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('掉点'+H.length+'/'+codes.length):(!hasRct?'无Rct':(!rmsOk?('RMS'+rms.toFixed(1)+'%'):''))};
+    if(complete&&hasRct&&rmsOk)return Object.assign(cand,{ok:true,tries:t});
     if(!best||(cand.complete&&!best.complete)||(cand.rms<best.rms))best=cand;
   }
   return Object.assign(best||{ok:false,H:[],reason:'无数据'},{ok:false,tries:maxTries});
@@ -449,40 +451,43 @@ $('btnSweep').onclick=async()=>{
     const timer=setInterval(()=>{$('prog').textContent=pStat+' · '+((Date.now()-t0)/1000).toFixed(0)+'s';},300);
     const base={onPoint:(i,n)=>{pStat='点 '+i+'/'+n;},onTick:()=>{}};
     if(sel==='auto')base.auto=true;else{base.auto=false;base.samp=parseInt(sel);}
-    let r,usedBand;
-    if(band==='auto'){
-      // 先极速探一遍(快), 看高频Z'量级: 低阻(LFP, <3mΩ)→极速够; 高阻(三元, 弧在低频)→自动延到低频闭合弧
-      r=await measureGood(EXPRESS,Object.assign({avg:1},base),5,3,(m)=>{pStat=m;});usedBand='极速';
-      const rsHF=(r.R&&r.R.length)?r.R[0]:(r.o?r.o.Rs:null);
-      if(r.H&&r.H.length>=4&&rsHF!=null&&rsHF>3000){
-        pStat='高阻电芯('+(rsHF/1000).toFixed(1)+'mΩ),自动延到低频闭合弧…';
-        const r2=await measureGood(FAST,Object.assign({avg:1},base),12,2,(m)=>{pStat=m;});  // 高阻三元有Warburg尾, rms 7~10%是正常水平, 门控放12(8太严会无谓重测)
-        if(r2.H&&r2.H.length>=8){r=r2;usedBand='较全(低频)';}
-      }
-    }else{
-      r=await measureGood(codesOf(band),Object.assign({avg:avgOf(band)},base),band==='fast'?12:5,3,(m)=>{pStat=m;});
-      usedBand=band==='express'?'极速':'较全';
+    let r,usedBand;const isSort=(band==='sort');
+    if(isSort){       // 分选快测: 不闭合弧不拟合Rct, 取Rs+低频|Z|排序, 快+不卡重测
+      r=await measureGood(SORT,Object.assign({avg:1,sort:true},base),99,2,(m)=>{pStat=m;});usedBand='分选';
+    }else if(band==='express'){
+      r=await measureGood(EXPRESS,Object.assign({avg:1},base),5,3,(m)=>{pStat=m;});usedBand='极速谱';
+    }else{            // fast=精测: 闭合弧出准确Rct
+      r=await measureGood(FAST,Object.assign({avg:1},base),12,2,(m)=>{pStat=m;});usedBand='精测';
     }
     clearInterval(timer);
     const el=((Date.now()-t0)/1000).toFixed(0);
     const {H,R,I,o,e}=r;
     if(!H||H.length<4){$('prog').textContent='测量失败('+(r.reason||'')+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
+    // 低频|Z|排序键: 最低频点的 |Z|=sqrt(Re²+Im²)
+    let zlow=null,zlowHz=null;{let mi=0;for(let k=1;k<H.length;k++)if(H[k]<H[mi])mi=k;zlow=Math.hypot(R[mi],I[mi]);zlowHz=H[mi];}
     $('L').textContent=o.L_nH!=null?o.L_nH.toFixed(0)+' nH':'—';
     $('rs').textContent=o.Rs!=null?(o.Rs/1000).toFixed(3)+' mΩ':'—';
-    $('rct').textContent=o.Rct!=null?(o.Rct/1000).toFixed(3)+' mΩ':(e?(e.Rct_uOhm/1000).toFixed(3)+' mΩ(ECM)':'—');
-    const rms=e?e.rms:null;
-    $('rms').innerHTML=rms!=null?('<span class="'+(rms<5?'ok':rms<10?'warn':'bad')+'">'+rms.toFixed(2)+'%'+(rms<5?' 良':rms<10?' 一般':' 差,建议重测')+'</span>'):'—';
-    if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
+    if(isSort){
+      $('rct').textContent='分选模式·未拟合';
+      $('rms').innerHTML='<span class="ok">排序键 |Z|@'+(zlowHz?zlowHz.toFixed(2):'?')+'Hz = '+(zlow?(zlow/1000).toFixed(3):'-')+' mΩ</span>';
+      $('ecm').textContent='分选: 用 Rs + 低频|Z| 比好坏(可重复); 要准确Rct切"精测Rct"档';
+    }else{
+      $('rct').textContent=o.Rct!=null?(o.Rct/1000).toFixed(3)+' mΩ':(e?(e.Rct_uOhm/1000).toFixed(3)+' mΩ(ECM)':'—');
+      const rms=e?e.rms:null;
+      $('rms').innerHTML=rms!=null?('<span class="'+(rms<5?'ok':rms<12?'warn':'bad')+'">'+rms.toFixed(2)+'%'+(rms<5?' 良':rms<12?' 一般':' 差,建议重测')+'</span>'):'—';
+      if(e)$('ecm').textContent='ECM: Rs='+(e.Rs_uOhm/1000).toFixed(3)+' Rct='+(e.Rct_uOhm/1000).toFixed(3)+'mΩ n='+e.n.toFixed(2);
+    }
     $('prog').textContent=(r.ok?'完成':'⚠质量勉强('+r.reason+')')+' ['+usedBand+'] '+H.length+'点 用时'+el+'s'+(r.tries>1?' 重测'+r.tries+'次':'');
     draw('nyq',H,R,I,o);
-    // SOC/温度 归一化 (用 OCV=gVolt, 温度=gTemp)
-    const rctRaw=o.Rct!=null?o.Rct:(e?e.Rct_uOhm:null);
+    // SOC/温度 归一化: 分选用 Zlow 做温度归一(排序更公平); 精测/极速用 Rct
+    const rctRaw=isSort?null:(o.Rct!=null?o.Rct:(e?e.Rct_uOhm:null));
     const nrm=A.normalizeRct(rctRaw,gVolt,normTemp());
     const confTxt={high:'高',mid:'中',low:'低',none:'—'}[nrm.conf];
     const confCls={high:'ok',mid:'warn',low:'bad',none:'bad'}[nrm.conf];
     $('chem').textContent=nrm.chemName+(nrm.soc!=null?' / SOC≈'+nrm.soc.toFixed(0)+'%'+(nrm.socReliable?'':'(不可靠)'):'');
-    $('rctn').innerHTML=nrm.rct_norm!=null?((nrm.rct_norm/1000).toFixed(3)+' mΩ <span class="'+confCls+'" style="font-size:12px">[置信'+confTxt+']</span>'):'—';
-    gLast={hz:H,re:R,im:I,o:o,ecm:e,norm:nrm};saveRecord();
+    const zlowN=(isSort&&zlow!=null)?zlow*nrm.kTemp:null;   // Zlow 温度归一(到25℃)
+    $('rctn').innerHTML=isSort?(zlowN!=null?('|Z|归一 '+(zlowN/1000).toFixed(3)+' mΩ <span class="'+confCls+'" style="font-size:12px">[排序键]</span>'):'—'):(nrm.rct_norm!=null?((nrm.rct_norm/1000).toFixed(3)+' mΩ <span class="'+confCls+'" style="font-size:12px">[置信'+confTxt+']</span>'):'—');
+    gLast={hz:H,re:R,im:I,o:o,ecm:e,norm:nrm,sort:isSort,zlow:zlow,zlowHz:zlowHz,zlowNorm:zlowN};saveRecord();
   }catch(err){$('ecm').textContent='出错: '+err.message;}
   $('btnSweep').disabled=false;
 };
@@ -494,7 +499,7 @@ async function saveRecord(){
   $('saveSt').textContent='保存中...';
   try{const o=gLast.o,e=gLast.ecm;
     const nm=gLast.norm;
-    const r=await apiPost('/save',{device_serial:gSerial,user_phone:oper,operator:oper,battery_code:bcode,spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,ecm:e?{rs:e.Rs_uOhm,rct:e.Rct_uOhm,n:e.n,rms:e.rms}:null,temp:normTemp(),temp_die:gTemp,temp_cell:gCellTemp,volt:gVolt,chemistry:nm?nm.chem:null,soc:nm?nm.soc:null,rct_norm:nm?nm.rct_norm:null,norm:nm?{chem:nm.chem,soc:nm.soc,reliable:nm.socReliable,kSoc:nm.kSoc,kTemp:nm.kTemp,conf:nm.conf}:null,device_id:gSerial||'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()});
+    const r=await apiPost('/save',{device_serial:gSerial,user_phone:oper,operator:oper,battery_code:bcode,spectrum:{hz:gLast.hz,re:gLast.re,im:gLast.im},rs:o.Rs,rct:o.Rct,l_nh:o.L_nH,ecm:e?{rs:e.Rs_uOhm,rct:e.Rct_uOhm,n:e.n,rms:e.rms}:null,temp:normTemp(),temp_die:gTemp,temp_cell:gCellTemp,volt:gVolt,chemistry:nm?nm.chem:null,soc:nm?nm.soc:null,rct_norm:nm?nm.rct_norm:null,norm:nm?{chem:nm.chem,soc:nm.soc,reliable:nm.socReliable,kSoc:nm.kSoc,kTemp:nm.kTemp,conf:nm.conf}:null,mode:gLast.sort?'sort':'precise',zlow:gLast.zlow,zlow_hz:gLast.zlowHz,zlow_norm:gLast.zlowNorm,device_id:gSerial||'JDY-10',photo:gPhoto,measured_at:new Date().toISOString()});
     if(r.ok){$('saveSt').textContent='已存 #'+r.id+(gPhoto?' 📷':'');clearPhoto();}else $('saveSt').textContent='存失败:'+(r.err||'?');
   }catch(e){$('saveSt').textContent='存失败(离线?):'+e.message;}
 }
