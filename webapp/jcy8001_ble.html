@@ -53,7 +53,8 @@
   <div class="card">
     <div class="row"><div class="title">阻抗谱</div><button id="btnSweep" disabled>开始扫频</button></div>
     <div class="row"><span class="lbl">挡位</span>
-      <select id="range"><option value="auto">自动挡(推荐)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
+      <select id="range"><option value="auto">自动挡(首颗定档后锁定,提速)</option><option value="2">1Ω(~1mΩ)</option><option value="1">5Ω(~10mΩ)</option><option value="0">10Ω(~100mΩ)</option></select></div>
+    <div class="row" id="gearLockRow" style="display:none;padding-top:0"><span class="lbl" style="font-size:12px">🔒已锁挡</span><span class="val" style="font-size:12px"><span id="gearLockTxt"></span> · <a id="gearReset" style="color:#0071e3;cursor:pointer">重新定档</a></span></div>
     <div class="row"><span class="lbl">扫频范围</span>
       <select id="band"><option value="sort">分选快测 (Rs+阻抗排序, ~40s, 推荐)</option><option value="express">极速谱 8点 (→7.6Hz, ~30s)</option><option value="fast">精测Rct (闭合弧→0.12Hz, 2-3分钟)</option></select></div>
     <div class="row"><span class="lbl">进度 / 用时</span><span class="val" id="prog" style="font-size:13px">—</span></div>
@@ -114,7 +115,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.4.0 (2026-06-05)';
+const APP_VERSION='v1.4.1 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -427,7 +428,9 @@ async function measureGood(codes,opts,gate,maxTries,onStatus){
 const $=id=>document.getElementById(id);
 function setSt(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
 function showTab(t){$('tabA').className='tab'+(t==='A'?' on':'');$('tabB').className='tab'+(t==='B'?' on':'');$('viewA').style.display=t==='A'?'block':'none';$('viewB').style.display=t==='B'?'block':'none';}
-let gTemp=null,gVolt=null,gLast=null,gPhoto=null,gWarmed=false,gSerial=null,gFw=0,gCellTemp=null;
+let gTemp=null,gVolt=null,gLast=null,gPhoto=null,gWarmed=false,gSerial=null,gFw=0,gCellTemp=null,gLockGear=null;
+const GEAR_TXT={0:'10Ω(~100mΩ)',1:'5Ω(~10mΩ)',2:'1Ω(~1mΩ)'};
+function showGearLock(){const on=(gLockGear!=null&&$('range').value==='auto');$('gearLockRow').style.display=on?'flex':'none';if(on)$('gearLockTxt').textContent=GEAR_TXT[gLockGear]||('档'+gLockGear);}
 // 取归一化用的温度: 优先外接电芯温(0x3301, 固件v2.24+且探头已接), 否则回退芯片die温
 function normTemp(){return (gCellTemp!=null)?gCellTemp:gTemp;}
 $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect();setSt('已连接(BLE)',true);
@@ -450,7 +453,11 @@ $('btnSweep').onclick=async()=>{
     const t0=Date.now();let pStat='测量中…';
     const timer=setInterval(()=>{$('prog').textContent=pStat+' · '+((Date.now()-t0)/1000).toFixed(0)+'s';},300);
     const base={onPoint:(i,n)=>{pStat='点 '+i+'/'+n;},onTick:()=>{}};
-    if(sel==='auto')base.auto=true;else{base.auto=false;base.samp=parseInt(sel);}
+    // 挡位: 手动档直接用; 自动档→若已锁挡(上颗探出的)就复用(跳过~14s探档), 否则本颗探档
+    let probing=false;
+    if(sel!=='auto'){base.auto=false;base.samp=parseInt(sel);}
+    else if(gLockGear!=null){base.auto=false;base.samp=gLockGear;}
+    else{base.auto=true;probing=true;pStat='首颗探档中…';}
     let r,usedBand;const isSort=(band==='sort');
     if(isSort){       // 分选快测: 不闭合弧不拟合Rct, 取Rs+低频|Z|排序, 快+不卡重测
       r=await measureGood(SORT,Object.assign({avg:1,sort:true},base),99,2,(m)=>{pStat=m;});usedBand='分选';
@@ -463,6 +470,8 @@ $('btnSweep').onclick=async()=>{
     const el=((Date.now()-t0)/1000).toFixed(0);
     const {H,R,I,o,e}=r;
     if(!H||H.length<4){$('prog').textContent='测量失败('+(r.reason||'')+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
+    // 自动挡首颗探完→锁定该挡, 后续复用(跳过探档提速); 显示锁定+重新定档
+    if(probing&&r.gear&&r.gear.sel!=null){gLockGear=r.gear.sel;localStorage.setItem('jcy_lockgear',gLockGear);showGearLock();}
     // 低频|Z|排序键: 最低频点的 |Z|=sqrt(Re²+Im²)
     let zlow=null,zlowHz=null;{let mi=0;for(let k=1;k<H.length;k++)if(H[k]<H[mi])mi=k;zlow=Math.hypot(R[mi],I[mi]);zlowHz=H[mi];}
     $('L').textContent=o.L_nH!=null?o.L_nH.toFixed(0)+' nH':'—';
@@ -578,7 +587,10 @@ $('btnSavePack').onclick=async()=>{const oper=localStorage.getItem('jcy_phone')|
 // 记住输入
 ['phone','bcode'].forEach(id=>{const v=localStorage.getItem('jcy_'+id);if(v)$(id).value=v;$(id).addEventListener('input',()=>localStorage.setItem('jcy_'+id,$(id).value));});
 {const r=localStorage.getItem('jcy_range');if(r)$('range').value=r;const b=localStorage.getItem('jcy_band');if(b)$('band').value=b;
- $('range').addEventListener('change',()=>localStorage.setItem('jcy_range',$('range').value));$('band').addEventListener('change',()=>localStorage.setItem('jcy_band',$('band').value));}
+ const lg=localStorage.getItem('jcy_lockgear');if(lg!=null&&lg!=='')gLockGear=parseInt(lg);showGearLock();
+ $('range').addEventListener('change',()=>{localStorage.setItem('jcy_range',$('range').value);showGearLock();});$('band').addEventListener('change',()=>localStorage.setItem('jcy_band',$('band').value));}
+// 重新定档: 清掉锁定的挡, 下次自动挡重新探
+$('gearReset').onclick=()=>{gLockGear=null;localStorage.removeItem('jcy_lockgear');showGearLock();$('prog').textContent='已清挡位, 下次自动挡重新探';};
 $('ver').textContent=APP_VERSION;
 if(!navigator.bluetooth){document.querySelector('.nav').textContent='不支持Web蓝牙(用安卓Chrome)';}
 </script></body></html>
