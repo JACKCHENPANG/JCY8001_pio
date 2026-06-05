@@ -121,7 +121,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.5.4 (2026-06-05)';
+const APP_VERSION='v1.5.5 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -416,7 +416,7 @@ async function otaUpgrade(raw,onStat){   // raw=Uint8Array 固件
   onStat('校验+跳转…'); await txn(f06(0x7020,2),8,3000); await sleep(3500);
   for(let a=0;a<5;a++){try{await bleAttach();break;}catch(e){await sleep(1500);}}
   const fw=await rd(0x3E02,1); gOta=false;
-  return 'v'+((fw[0]>>8)&0xFF).toString(16)+'.'+String(fw[0]&0xFF).padStart(2,'0');
+  return 'v'+((fw[0]>>8)&0xFF).toString(16)+'.'+(fw[0]&0xFF).toString(16).padStart(2,'0');
 }
 // 通用扫频: codes + {auto,samp,onPoint,onTick} -> {hz,re,im,gear}
 async function sweepCore(codes,opts){
@@ -475,7 +475,7 @@ function showGearLock(){const on=(gLockGear!=null&&$('range').value==='auto');$(
 // 取归一化用的温度: 优先外接电芯温(0x3301, 固件v2.24+且探头已接), 否则回退芯片die温
 function normTemp(){return (gCellTemp!=null)?gCellTemp:gTemp;}
 $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect();setSt('已连接(BLE)',true);
-  gFw=(await rd(REG.FW,1))[0];$('fw').textContent='v'+((gFw>>8)&0xFF).toString(16)+'.'+String(gFw&0xFF).padStart(2,'0');
+  gFw=(await rd(REG.FW,1))[0];$('fw').textContent='v'+((gFw>>8)&0xFF).toString(16)+'.'+(gFw&0xFF).toString(16).padStart(2,'0');
   try{const uid=await rd(REG.SERIAL,6);if(uid.some(x=>x)){gSerial=serialFrom(uid);$('serial').textContent=gSerial;}else{gSerial=null;$('serial').textContent='固件不支持(需v2.23+)';}}catch(e){gSerial=null;$('serial').textContent='读取失败';}
   gTemp=(await rd(REG.TEMP,1))[0]/10;
   gCellTemp=null;   // 电芯温(外接DS18B20): 仅 fw>=v2.24 且探头已接(非0x8000)才用
