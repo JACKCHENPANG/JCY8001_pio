@@ -9,6 +9,11 @@
 #define US2_DR      REG(0x40004404u)
 #define US2_BRR     REG(0x40004408u)
 #define US2_CR1     REG(0x4000440Cu)
+#define GPIOA_CRH   REG(0x40010804u)
+#define US1_SR      REG(0x40013800u)   /* USART1 (PA9/PA10) → JDY-10 蓝牙 */
+#define US1_DR      REG(0x40013804u)
+#define US1_BRR     REG(0x40013808u)
+#define US1_CR1     REG(0x4001380Cu)
 #define FLASH_KEYR  REG(0x40022004u)
 #define FLASH_SR    REG(0x4002200Cu)
 #define FLASH_CR    REG(0x40022010u)
@@ -48,17 +53,22 @@ void Reset_Handler_impl(void){
   while(1){}
 }
 
-/* ── USART2 115200 @ HSI 8MHz (与 App 一致) ── */
+/* ── 双串口 115200 @ HSI 8MHz: USART2(CP2102 USB有线) + USART1(JDY-10 蓝牙) ── */
+static int cur_port = 2;   /* 当前处理/回复的端口: 2=USB有线, 1=蓝牙 */
 static void uart_init(void){
-  RCC_APB2ENR |= (1u<<0)|(1u<<2);   /* AFIOEN | IOPAEN */
-  RCC_APB1ENR |= (1u<<17);          /* USART2EN */
-  GPIOA_CRL = (GPIOA_CRL & 0xFFFF0000u) | 0x00004B04u;
-  US2_BRR = 0x0045u;
-  US2_CR1 = (1u<<13)|(1u<<3)|(1u<<2); /* UE|TE|RE */
+  RCC_APB2ENR |= (1u<<0)|(1u<<2)|(1u<<14);   /* AFIOEN | IOPAEN | USART1EN */
+  RCC_APB1ENR |= (1u<<17);                   /* USART2EN */
+  GPIOA_CRL = (GPIOA_CRL & 0xFFFF0000u) | 0x00004B04u;   /* PA2 TX-AF / PA3 RX (USART2) */
+  GPIOA_CRH = (GPIOA_CRH & ~0x00000FF0u) | 0x000004B0u;  /* PA9 TX-AF / PA10 RX (USART1) */
+  US2_BRR = 0x0045u; US2_CR1 = (1u<<13)|(1u<<3)|(1u<<2); /* UE|TE|RE */
+  US1_BRR = 0x0045u; US1_CR1 = (1u<<13)|(1u<<3)|(1u<<2);
 }
-static int uart_rx_ready(void){ return (US2_SR & (1u<<5))!=0; }
-static uint8_t uart_rx(void){ return (uint8_t)US2_DR; }
-static void uart_tx(uint8_t b){ while(!(US2_SR&(1u<<7))){} US2_DR=b; }
+static int u2_ready(void){ return (US2_SR & (1u<<5))!=0; }
+static int u1_ready(void){ return (US1_SR & (1u<<5))!=0; }
+static void uart_tx(uint8_t b){
+  if(cur_port==1){ while(!(US1_SR&(1u<<7))){} US1_DR=b; }
+  else           { while(!(US2_SR&(1u<<7))){} US2_DR=b; }
+}
 
 /* ── Flash 驱动 ── */
 static void fl_unlock(void){ FLASH_KEYR=0x45670123u; FLASH_KEYR=0xCDEF89ABu; }
@@ -164,11 +174,14 @@ int boot_main(void){
   int force_update = ((BKP_DR1 & 0xFFFFu)==BKP_MAGIC);
   if(force_update) BKP_DR1=0;         /* 清标志 */
   if(!force_update && app_valid()) jump_app();   /* 正常: 跳 App */
-  /* 否则进升级模式 */
+  /* 否则进升级模式: 同时监听 USB(USART2) 和 蓝牙(USART1), 谁来帧从谁回 */
   uart_init();
-  uint8_t rx[256]; uint16_t idx=0; uint32_t idle=0;
+  static uint8_t rx2[256], rx1[256];
+  uint16_t idx2=0, idx1=0; uint32_t idle2=0, idle1=0;
   while(1){
-    if(uart_rx_ready()){ if(idx<sizeof(rx)) rx[idx++]=uart_rx(); idle=0; }
-    else { if(idx>=4 && ++idle>20000){ handle(rx,idx); idx=0; idle=0; } }
+    if(u2_ready()){ if(idx2<sizeof(rx2)) rx2[idx2++]=(uint8_t)US2_DR; idle2=0; }
+    else { if(idx2>=4 && ++idle2>20000){ cur_port=2; handle(rx2,idx2); idx2=0; idle2=0; } }
+    if(u1_ready()){ if(idx1<sizeof(rx1)) rx1[idx1++]=(uint8_t)US1_DR; idle1=0; }
+    else { if(idx1>=4 && ++idle1>20000){ cur_port=1; handle(rx1,idx1); idx1=0; idle1=0; } }
   }
 }
