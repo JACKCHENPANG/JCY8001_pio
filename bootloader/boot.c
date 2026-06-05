@@ -167,6 +167,14 @@ static void handle(uint8_t*rx,uint16_t n){
   }
 }
 
+/* 按 Modbus 功能码算整帧长度(含CRC): FC03/05/06 固定8; FC10 = 7头+字节数+2CRC. 不够判断返回-1继续收 */
+static int frame_len(const uint8_t*b, uint16_t idx){
+  if(idx<2) return -1;
+  uint8_t fc=b[1];
+  if(fc==0x03||fc==0x05||fc==0x06) return 8;
+  if(fc==0x10){ if(idx<7) return -1; return 7+(int)b[6]+2; }
+  return 8;   /* 未知功能码当8字节 */
+}
 int boot_main(void){
   /* 检查 BKP 升级标志 (系统复位不丢) */
   RCC_APB1ENR |= (1u<<28)|(1u<<27);   /* PWREN | BKPEN */
@@ -179,9 +187,15 @@ int boot_main(void){
   static uint8_t rx2[256], rx1[256];
   uint16_t idx2=0, idx1=0; uint32_t idle2=0, idle1=0;
   while(1){
-    if(u2_ready()){ if(idx2<sizeof(rx2)) rx2[idx2++]=(uint8_t)US2_DR; idle2=0; }
-    else { if(idx2>=4 && ++idle2>20000){ cur_port=2; handle(rx2,idx2); idx2=0; idle2=0; } }
-    if(u1_ready()){ if(idx1<sizeof(rx1)) rx1[idx1++]=(uint8_t)US1_DR; idle1=0; }
-    else { if(idx1>=4 && ++idle1>20000){ cur_port=1; handle(rx1,idx1); idx1=0; idle1=0; } }
+    /* USART2 (USB): 按帧长判定完整(不靠空闲计时, 蓝牙/USB多包都稳) */
+    if(u2_ready()){ if(idx2<sizeof(rx2)) rx2[idx2++]=(uint8_t)US2_DR; idle2=0;
+      int fl=frame_len(rx2,idx2);
+      if(fl>0 && idx2>=(uint16_t)fl){ cur_port=2; handle(rx2,(uint16_t)fl); idx2=0; } }
+    else { if(idx2>0 && ++idle2>100000u){ idx2=0; idle2=0; } }   /* 长空闲清残帧(防desync) */
+    /* USART1 (蓝牙): 同理 — Android 分多个20字节BLE包发, 按帧长拼回 */
+    if(u1_ready()){ if(idx1<sizeof(rx1)) rx1[idx1++]=(uint8_t)US1_DR; idle1=0;
+      int fl=frame_len(rx1,idx1);
+      if(fl>0 && idx1>=(uint16_t)fl){ cur_port=1; handle(rx1,(uint16_t)fl); idx1=0; } }
+    else { if(idx1>0 && ++idle1>100000u){ idx1=0; idle1=0; } }
   }
 }

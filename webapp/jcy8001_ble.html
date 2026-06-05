@@ -121,7 +121,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.5.2 (2026-06-05)';
+const APP_VERSION='v1.5.3 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -386,6 +386,8 @@ async function bleConnect(){
 }
 async function txn(fr,rl,to){to=to||4000;for(let a=0;a<2;a++){rxBuf=[];await gChar.writeValueWithoutResponse(fr);const t=Date.now();while(rxBuf.length<rl&&Date.now()-t<to)await sleep(40);if(rxBuf.length>=rl)break;await sleep(150);}return new Uint8Array(rxBuf);}
 async function rd(r,n){const x=parseRead(await txn(f03(r,n),5+2*n));if(!x)throw new Error('rd0x'+r.toString(16));return x;}
+// 大帧: 拆成≤20字节BLE包连发(配MTU23), 全发完等一次回复. bootloader按帧长拼回, 一次回复传几十寄存器→快
+async function txnBig(fr,rl,to){to=to||3000;for(let a=0;a<2;a++){rxBuf=[];for(let i=0;i<fr.length;i+=20){await gChar.writeValueWithoutResponse(fr.slice(i,i+20));}const t=Date.now();while(rxBuf.length<rl&&Date.now()-t<to)await sleep(15);if(rxBuf.length>=rl)break;await sleep(150);}return new Uint8Array(rxBuf);}
 async function i64(r){return regs64(await rd(r,4));}
 async function w06(r,v){await txn(f06(r,v),8);}
 async function coil(on){await txn(f05(0x00C0,on),8);}
@@ -405,11 +407,11 @@ async function otaUpgrade(raw,onStat){   // raw=Uint8Array 固件
   await txn(f10(0x7010,[len>>>16,len&0xFFFF,crc>>>16,crc&0xFFFF]),8);
   onStat('擦除中…'); await txn(f06(0x7020,1),8,4000);
   const hw=[]; for(let i=0;i<len;i+=2)hw.push(data[i]|(data[i+1]<<8));
-  const N=5, total=hw.length; const t0=Date.now();   // 5寄存器/块(19字节帧≤20, 配JDY默认MTU23; 块大了写会失败@0)
+  const N=60, total=hw.length; const t0=Date.now();   // 60寄存器/帧(129字节, 拆7个BLE包连发, bootloader按帧长拼回) → 比5寄存器快~12倍
   for(let i=0;i<total;i+=N){
-    const r=await txn(f10(0x7100,hw.slice(i,i+N)),8,3000);
+    const r=await txnBig(f10(0x7100,hw.slice(i,i+N)),8,4000);
     if(r.length<8){gOta=false;throw new Error('写块失败@'+i);}
-    if(i%400===0||i+N>=total)onStat('传输 '+Math.min(100,Math.round((i+N)/total*100))+'% ('+((Date.now()-t0)/1000).toFixed(0)+'s)');
+    if(i%600<N||i+N>=total)onStat('传输 '+Math.min(100,Math.round((i+N)/total*100))+'% ('+((Date.now()-t0)/1000).toFixed(0)+'s)');
   }
   onStat('校验+跳转…'); await txn(f06(0x7020,2),8,3000); await sleep(3500);
   for(let a=0;a<5;a++){try{await bleAttach();break;}catch(e){await sleep(1500);}}
