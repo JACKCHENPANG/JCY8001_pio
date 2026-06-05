@@ -121,7 +121,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.5.1 (2026-06-05)';
+const APP_VERSION='v1.5.2 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -405,7 +405,7 @@ async function otaUpgrade(raw,onStat){   // raw=Uint8Array 固件
   await txn(f10(0x7010,[len>>>16,len&0xFFFF,crc>>>16,crc&0xFFFF]),8);
   onStat('擦除中…'); await txn(f06(0x7020,1),8,4000);
   const hw=[]; for(let i=0;i<len;i+=2)hw.push(data[i]|(data[i+1]<<8));
-  const N=40, total=hw.length; const t0=Date.now();   // 40寄存器/块(89字节帧, 安卓MTU 247下单包)
+  const N=5, total=hw.length; const t0=Date.now();   // 5寄存器/块(19字节帧≤20, 配JDY默认MTU23; 块大了写会失败@0)
   for(let i=0;i<total;i+=N){
     const r=await txn(f10(0x7100,hw.slice(i,i+N)),8,3000);
     if(r.length<8){gOta=false;throw new Error('写块失败@'+i);}
