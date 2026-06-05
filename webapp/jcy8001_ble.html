@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.4 (2026-06-05)';
+const APP_VERSION='v1.3.5 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -403,14 +403,19 @@ function clean(s){const H=[],R=[],I=[];const n=Math.min(s.hz.length,s.re.length,
 // 自动质量判定 + 按需重测: 好→一次过, 差(点不齐/RMS高/圆拟合失败)→自动重测最多maxTries次
 async function measureGood(codes,opts,gate,maxTries,onStatus){
   gate=gate||5;maxTries=maxTries||3;let best=null;
-  if(!gWarmed){if(onStatus)onStatus('首次预热(空跑1条)…');try{await sweepCore(codes,{auto:opts.auto,samp:opts.samp,avg:opts.avg});}catch(e){}gWarmed=true;}  // 丢弃首测settling
+  // 预热只对短档(极速≤8点)做; 低频档一条上百秒, 空跑丢弃太浪费
+  if(!gWarmed&&codes.length<=8){if(onStatus)onStatus('首次预热(空跑1条)…');try{await sweepCore(codes,{auto:opts.auto,samp:opts.samp,avg:opts.avg});}catch(e){}gWarmed=true;}
+  const minPts=Math.max(6,codes.length-1);   // 容许掉1个点(最低频点常掉, 不影响弧闭合)
   for(let t=1;t<=maxTries;t++){
-    if(onStatus&&t>1)onStatus('有掉点/质量差,自动重测 '+t+'/'+maxTries+'…');
+    if(onStatus&&t>1)onStatus('质量差,自动重测 '+t+'/'+maxTries+'…');
     const s=await sweepCore(codes,opts);const {H,R,I}=clean(s);
     let o=null,e=null,rms=999;
     if(H.length>=6){o=A.analyze(H,R,I);e=A.ecmFit(H,R,I);rms=e?e.rms:999;}
-    const complete=H.length>=codes.length, hasRct=o&&o.Rct!=null;   // 要求全点不掉(绝对干净)
-    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('掉点'+H.length+'/'+codes.length):(!hasRct?'圆拟合失败':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
+    const complete=H.length>=minPts;
+    // 圆拟合(o.Rct)对低阻LFP好; 高阻三元有Warburg尾圆拟合常失败→用ECM的Rct兜底
+    const rct=(o&&o.Rct!=null)?o.Rct:((e&&e.Rct_uOhm)?e.Rct_uOhm:null);
+    const hasRct=rct!=null;
+    const cand={H,R,I,o,e,rms,complete,gear:s.gear,reason:!complete?('掉点'+H.length+'/'+codes.length):(!hasRct?'无Rct':(rms>=gate?('RMS'+rms.toFixed(1)+'%'):''))};
     if(complete&&hasRct&&rms<gate)return Object.assign(cand,{ok:true,tries:t});
     if(!best||(cand.complete&&!best.complete)||(cand.rms<best.rms))best=cand;
   }
@@ -451,7 +456,7 @@ $('btnSweep').onclick=async()=>{
       const rsHF=(r.R&&r.R.length)?r.R[0]:(r.o?r.o.Rs:null);
       if(r.H&&r.H.length>=4&&rsHF!=null&&rsHF>3000){
         pStat='高阻电芯('+(rsHF/1000).toFixed(1)+'mΩ),自动延到低频闭合弧…';
-        const r2=await measureGood(FAST,Object.assign({avg:1},base),8,3,(m)=>{pStat=m;});
+        const r2=await measureGood(FAST,Object.assign({avg:1},base),8,2,(m)=>{pStat=m;});
         if(r2.H&&r2.H.length>=8){r=r2;usedBand='较全(低频)';}
       }
     }else{
