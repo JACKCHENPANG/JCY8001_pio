@@ -114,7 +114,7 @@
 
 <script>
 'use strict';
-const APP_VERSION='v1.3.1 (2026-06-05)';
+const APP_VERSION='v1.3.2 (2026-06-05)';
 const API_BASE='/battery-api',API_TOKEN='jcy8001-prod-7f3a2c9b5e';
 // ===== Modbus =====
 const SID=0x01;
@@ -439,10 +439,13 @@ $('btnSweep').onclick=async()=>{
   try{
     const sel=$('range').value;localStorage.setItem('jcy_range',sel);localStorage.setItem('jcy_band',$('band').value);
     const codes=codesOf($('band').value);
-    const opts={avg:avgOf($('band').value),onPoint:(i,n)=>$('prog').textContent='点 '+i+'/'+n,onTick:(s)=>$('prog').dataset.t=s.toFixed(0)};
+    // 持续计时: pStat=当前阶段文字, 每0.3s刷"阶段 · Ns" (修: 旧版onTick写进隐藏的dataset, 不显示)
+    const t0=Date.now();let pStat='测量中…';
+    const timer=setInterval(()=>{$('prog').textContent=pStat+' · '+((Date.now()-t0)/1000).toFixed(0)+'s';},300);
+    const opts={avg:avgOf($('band').value),onPoint:(i,n)=>{pStat='点 '+i+'/'+n;},onTick:()=>{}};
     if(sel==='auto')opts.auto=true;else{opts.auto=false;opts.samp=parseInt(sel);}
-    const t0=Date.now();
-    const r=await measureGood(codes,opts,5,3,(m)=>$('prog').textContent=m);
+    const r=await measureGood(codes,opts,5,3,(m)=>{pStat=m;});
+    clearInterval(timer);
     const el=((Date.now()-t0)/1000).toFixed(0);
     const {H,R,I,o,e}=r;
     if(!H||H.length<4){$('prog').textContent='测量失败('+(r.reason||'')+'), 用时'+el+'s — 检查接触';$('btnSweep').disabled=false;return;}
