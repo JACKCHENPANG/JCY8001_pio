@@ -15,6 +15,8 @@ volatile uint16_t jcy_ch_count;
 volatile uint16_t jcy_version;
 volatile uint32_t g_ms = 0;          // SysTick 1ms 计数 (ZM真实时间门基准; DWT CYCCNT在本芯片不计数, 改用SysTick)
 void SysTick_Handler(void) { g_ms++; }
+uint32_t g_pclk1 = 8000000, g_pclk2 = 8000000;   // 实际 APB1/APB2 时钟 (时钟初始化填; USART BRR/SPI 按它算)
+uint32_t g_clkmul = 1;                            // SystemCoreClock/8MHz (=9@72MHz / =1@8MHz保底; 延时缩放)
 volatile uint16_t jcy_temp;          // 0x3300 芯片die温 (T*10, raw*5/8)
 volatile uint16_t jcy_cell_temp = 0x8000;  // 0x3301 电芯温=外接DS18B20测环境温 (T*10,有符号); 0x8000=未接/无效
 volatile uint16_t jcy_voltage;
@@ -84,7 +86,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0226;   // v2.26 (ZM时间门基准 DWT→SysTick, 本芯片DWT不计数; ds18b20_poll暂停)
+    jcy_fw_version = 0x0227;   // v2.27 (B: HSI×16=64MHz, 本板HSE不起振; BRR/SPI/delay动态按主频)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -137,6 +139,7 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3301: return jcy_cell_temp;   // 电芯温 (外接DS18B20)
         case 0x3E31: return (uint16_t)(DWT->CYCCNT & 0xFFFF);   // DWT自检(本芯片不计数, 已弃用)
         case 0x3E32: return (uint16_t)(g_ms & 0xFFFF);          // SysTick自检: 连读两次应在变(1ms tick)
+        case 0x3E33: return (uint16_t)(SystemCoreClock / 1000000u);  // 实际主频MHz (72=HSE起振OK / 8=保底)
         case 0x3340: return jcy_voltage;
         case 0x3380: return jcy_status;
         // 阻抗实部 RE 0x3000~0x3003 / 虚部 IM 0x3080~0x3083: 64位有符号大端, 主机 /100000=μΩ。
@@ -337,7 +340,7 @@ static void usart2_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN;
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
     GPIOA->CRL = (GPIOA->CRL & 0xFFFF0000) | 0x00004B04;
-    USART2->BRR = 0x0045;
+    USART2->BRR = (g_pclk1 + 57600u) / 115200u;   // 115200 @ APB1 (动态: 72M→36M→313 / 8M→69)
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
     NVIC_SetPriority(USART2_IRQn, 1);     /* must run while loop is busy in DNB */
     NVIC_EnableIRQ(USART2_IRQn);
@@ -377,7 +380,7 @@ static void usart1_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
     /* PA9 = AF push-pull 50MHz (0xB), PA10 = floating input (0x4) */
     GPIOA->CRH = (GPIOA->CRH & 0xFFFFF00F) | 0x000004B0;
-    USART1->BRR = 0x45;                   /* 115200 @ PCLK2=8MHz (匹配 JDY-10 出厂默认 UART, 模块免配) */
+    USART1->BRR = (g_pclk2 + 57600u) / 115200u;   /* 115200 @ APB2 (动态: 72M→625 / 8M→69; 匹配 JDY-10 默认UART) */
     USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
     NVIC_SetPriority(USART1_IRQn, 1);
     NVIC_EnableIRQ(USART1_IRQn);
@@ -392,7 +395,7 @@ static void spi1_init(void) {
     GPIOA->CRL = (GPIOA->CRL & 0x0000FFFF) | 0xB4B00000;
     GPIOB->CRL = (GPIOB->CRL & 0xFFFFF0FF) | 0x00000300;
     GPIOB->BSRR = GPIO_BSRR_BS2;
-    SPI1->CR1 = 0x0354;
+    SPI1->CR1 = (g_clkmul >= 4u) ? 0x036Cu : 0x0354u;   // 64M→/64=1MHz / 8M保底→/8=1MHz (保 SPI~1MHz)
 }
 
 static void spi1_nss_low(void)  { GPIOB->BRR  = GPIO_BRR_BR2; }
@@ -500,7 +503,8 @@ static uint32_t dnb_make_cmd(uint8_t id, uint8_t cmd, uint16_t data) {
     return ul | dnb_crc4(ul);
 }
 
-static void dnb_delay_cycles(volatile uint32_t n) { while (n--) __asm volatile ("nop"); }
+/* DNB 命令间延时: 调用点按 8MHz cycle 数写的; 72MHz 下 nop 快9倍 → ×9 保持原 wall-time (DNB SPI 时序不变) */
+static void dnb_delay_cycles(volatile uint32_t n) { n *= g_clkmul; while (n--) __asm volatile ("nop"); }
 
 /* ════════════ DS18B20 电芯温(环境温)探头 — 1-Wire 位带, DWT µs 延时 ════════════
  * 引脚 ⚠️待定(等 Altium 原理图确认空闲且引出的脚): 现占位 PB9。改这 3 个宏即可换脚。
@@ -840,13 +844,24 @@ static void process_modbus(uint8_t *rx, uint16_t rxlen) {
 int main(void)
 {
     SCB->VTOR = 0x08004000u;   // OTA: App 重定位到 0x08004000, 中断向量表偏移
+    // ── 时钟: HSI/2 × PLL16 = 64MHz (本板HSE晶振不起振, 用内部HSI; 8倍速)。AHB=64/APB2=64/APB1=32/Flash 2WS ──
     RCC->CFGR = 0x00000000;
-    RCC->CR &= ~(RCC_CR_HSEON | RCC_CR_PLLON);
-    RCC->CR |= RCC_CR_HSION;
-    SystemCoreClock = 8000000;
-    SysTick->LOAD = 8000u - 1u;   // 8MHz/8000 = 1kHz → 1ms tick (ZM真实时间门)
-    SysTick->VAL  = 0u;
-    SysTick->CTRL = 0x7u;          // CLKSOURCE(处理器时钟)|TICKINT|ENABLE
+    RCC->CR  &= ~RCC_CR_PLLON;
+    RCC->CR  |= RCC_CR_HSION;
+    { uint32_t t=0; while(!(RCC->CR & RCC_CR_HSIRDY) && ++t<0x40000u); }
+    FLASH->ACR = FLASH_ACR_PRFTBE | FLASH_ACR_LATENCY_2;       // 64MHz需2等待周期
+    RCC->CFGR = (0x4u<<8) | (0xEu<<18);                        // PPRE1=/2(APB1=32M), PLLSRC=HSI/2, PLLMUL=×16
+    RCC->CR  |= RCC_CR_PLLON;
+    { uint32_t t=0; while(!(RCC->CR & RCC_CR_PLLRDY) && ++t<0x40000u); }
+    if (RCC->CR & RCC_CR_PLLRDY) {                             // PLL锁定→64MHz; 否则保底8MHz HSI
+        RCC->CFGR |= 0x2u;                                      // SYSCLK=PLL
+        { uint32_t t=0; while(((RCC->CFGR>>2)&0x3u)!=0x2u && ++t<0x40000u); }
+        SystemCoreClock = 64000000; g_pclk1 = 32000000; g_pclk2 = 64000000; g_clkmul = 8;
+    } else {
+        FLASH->ACR = FLASH_ACR_PRFTBE;                          // 回 0 等待
+        SystemCoreClock = 8000000;  g_pclk1 = 8000000;  g_pclk2 = 8000000;  g_clkmul = 1;
+    }
+    { uint32_t hz = SystemCoreClock; SysTick->LOAD = hz/1000u - 1u; SysTick->VAL = 0u; SysTick->CTRL = 0x7u; }  // 1ms tick
 
     init_registers();
     flash_load_cal();   // 从Flash加载采样电阻校准(若有), 覆盖默认10/5/1Ω
@@ -890,7 +905,7 @@ int main(void)
 #define DNB_BAD_LIMIT  3           // 连续3次(~1.5s)温压全0 = DNB掉枚举, 触发自动重枚举
 #define ZM_CONV_CYCLES  100       // ZM 转换时间门: 等够这么多轮询周期就读结果(原厂按 ConvTime, 不死等 BalZMDone). 100周期~6-8s, 安全超过原厂~4-5s转换时间
 
-#define MEASURE_INTERVAL  50000   // ~500ms @ 8MHz
+#define MEASURE_INTERVAL  450000  // ~500ms @ 72MHz (8MHz时是50000; ×9保 wall-time)
 
     while (1) {
         uint8_t c;
@@ -903,7 +918,7 @@ int main(void)
             idle_ticks1 = 0;
         } else {
             idle_ticks1++;
-            if (frame_idx1 >= 8 && idle_ticks1 > 5000) {
+            if (frame_idx1 >= 8 && idle_ticks1 > 45000) {
                 g_reply_port = 1;
                 process_modbus(frame_buf1, frame_idx1);
                 frame_idx1 = 0;
@@ -920,7 +935,7 @@ int main(void)
             idle_ticks++;
             measure_ticks++;
 
-            if (frame_idx >= 8 && idle_ticks > 5000) {
+            if (frame_idx >= 8 && idle_ticks > 45000) {
                 g_reply_port = 2;
                 process_modbus(frame_buf, frame_idx);
                 frame_idx = 0;
