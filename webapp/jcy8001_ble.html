@@ -473,15 +473,15 @@ function showTab(t){$('tabA').className='tab'+(t==='A'?' on':'');$('tabB').class
 let gTemp=null,gVolt=null,gVolt2=null,gLast=null,gPhoto=null,gWarmed=false,gSerial=null,gFw=0,gCellTemp=null,gLockGear=null;
 const GEAR_TXT={0:'10Ω(~100mΩ)',1:'5Ω(~10mΩ)',2:'1Ω(~1mΩ)'};
 function showGearLock(){const on=(gLockGear!=null&&$('range').value==='auto');$('gearLockRow').style.display=on?'flex':'none';if(on)$('gearLockTxt').textContent=GEAR_TXT[gLockGear]||('档'+gLockGear);}
-// 取归一化用的温度: 优先外接电芯温(0x3301, 固件v2.24+且探头已接), 否则回退芯片die温
+// 取归一化用的温度: 优先辅助温度(0x3301: v2.29+ 为U6 die温; 旧版为外接探头), 否则回退主芯片温
 function normTemp(){return (gCellTemp!=null)?gCellTemp:gTemp;}
 $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect();setSt('已连接(BLE)',true);
   gFw=(await rd(REG.FW,1))[0];$('fw').textContent='v'+((gFw>>8)&0xFF).toString(16)+'.'+(gFw&0xFF).toString(16).padStart(2,'0');
   try{const uid=await rd(REG.SERIAL,6);if(uid.some(x=>x)){gSerial=serialFrom(uid);$('serial').textContent=gSerial;}else{gSerial=null;$('serial').textContent='固件不支持(需v2.23+)';}}catch(e){gSerial=null;$('serial').textContent='读取失败';}
   gTemp=(await rd(REG.TEMP,1))[0]/10;
-  gCellTemp=null;   // 电芯温(外接DS18B20): 仅 fw>=v2.24 且探头已接(非0x8000)才用
+  gCellTemp=null;   // 辅助温度: fw>=v2.29 为 U6 die温；旧固件 v2.24~v2.28 为外接探头
   if(gFw>=0x0224){try{const ct=(await rd(REG.CELLTEMP,1))[0];if(ct!==0x8000){let s=ct>32767?ct-65536:ct;gCellTemp=s/10;}}catch(e){}}
-  $('tp').textContent='芯片 '+gTemp.toFixed(1)+'℃ / 电芯 '+(gCellTemp!=null?gCellTemp.toFixed(1)+'℃':'未接');
+  $('tp').textContent='主芯片 '+gTemp.toFixed(1)+'℃ / 辅助 '+(gCellTemp!=null?gCellTemp.toFixed(1)+'℃':'无效');
   gVolt=(await rd(REG.VOLT,1))[0]/10000;
   gVolt2=null;
   try{const v2=(await rd(REG.VOLT2,1))[0];if(v2)gVolt2=v2/10000;}catch(e){}
