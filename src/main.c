@@ -86,7 +86,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0234;   // v2.34: jdy_rename发完AT+NAME加AT+RESET(JDY干净重广播,蓝牙OTA后免手动断电); 含v2.33改名+v2.32 autorange
+    jcy_fw_version = 0x0235;   // v2.35: DNB自愈加 GenStat==0xFFFF 触发(接电芯掉枚举=温度0+电压railed+SPI死也自动重枚举); 含v2.34 JDY重置+v2.33改名+v2.32 autorange
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -991,9 +991,12 @@ int main(void)
                 jcy_dnb_volt_raw = f;
                 jcy_voltage = (uint16_t)(((uint32_t)f * 48000UL) / 16383UL + 12000UL);
 
-                // ── DNB 自愈: 温度+电压原始值同时为0 = DNB掉枚举(电池/夹子接触瞬断). ──
+                // ── DNB 自愈: 判 DNB 掉线(电池/夹子接触瞬断或接电芯掉枚举). ──
+                // 掉线两种表现都覆盖: (1)温压原始值同时为0; (2)温度=0 且 GenStat 全1(0xFFFF=MCU读DNB
+                // MISO悬空, SPI无响应) —— 后者是接电芯掉枚举的实测态(温度0+电压railed 0xEA60+GenStat 0xFFFF),
+                // 旧逻辑(需温压都=0)漏判这种(电压railed非0), 导致DNB死着不自救要手动冷启动. v2.35 补上.
                 // 连续 DNB_BAD_LIMIT 次判定掉线 → 自动重跑枚举+Init+阈值(与boot同序列), 接触恢复后自愈, 不用手动复位.
-                if (jcy_dnb_temp_raw == 0 && jcy_dnb_volt_raw == 0) {
+                if (jcy_dnb_temp_raw == 0 && (jcy_dnb_volt_raw == 0 || jcy_dnb_gs_hi == 0xFFFF)) {
                     if (++dnb_bad_count >= DNB_BAD_LIMIT) {
                         dnb_bad_count = 0;
                         jcy_reenum_count++;
