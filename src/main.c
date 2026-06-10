@@ -996,7 +996,9 @@ int main(void)
                 // MISO悬空, SPI无响应) —— 后者是接电芯掉枚举的实测态(温度0+电压railed 0xEA60+GenStat 0xFFFF),
                 // 旧逻辑(需温压都=0)漏判这种(电压railed非0), 导致DNB死着不自救要手动冷启动. v2.35 补上.
                 // 连续 DNB_BAD_LIMIT 次判定掉线 → 自动重跑枚举+Init+阈值(与boot同序列), 接触恢复后自愈, 不用手动复位.
-                if (jcy_dnb_temp_raw == 0 && (jcy_dnb_volt_raw == 0 || jcy_dnb_gs_hi == 0xFFFF)) {
+                // 注: DNB MISO 悬空时 GetData 返回全0xFF → 温度原始值解码成 0xFFFF(非0, 虽显示温度=0),
+                //     所以不能只判 temp_raw==0; GenStat==0xFFFF 才是最可靠的"DNB无响应"信号, 直接据此触发.
+                if (jcy_dnb_gs_hi == 0xFFFF || (jcy_dnb_temp_raw == 0 && jcy_dnb_volt_raw == 0)) {
                     if (++dnb_bad_count >= DNB_BAD_LIMIT) {
                         dnb_bad_count = 0;
                         jcy_reenum_count++;
