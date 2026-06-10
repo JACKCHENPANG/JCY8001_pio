@@ -34,10 +34,8 @@ class R:
     BUILD_DATE    = 0x3E04   # 编译日期
 
     # --- 实时 ---
-    TEMP          = 0x3300   # 主温度 值/10 = ℃ (有符号)
-    AUX_TEMP      = 0x3301   # 辅助/第二采集芯片温度 值/10 = ℃ (有符号)
-    VOLTAGE       = 0x3340   # 主电压 值/10000 = V
-    AUX_VOLTAGE   = 0x3341   # 辅助/第二采集芯片电压 值/10000 = V
+    TEMP          = 0x3300   # 温度 值/10 = ℃ (有符号)
+    VOLTAGE       = 0x3340   # 电压 值/10000 = V
     RT_STATUS     = 0x3380   # 0x0001 测量中 / 0x0006 完成 / 0x0005 ADC错
 
     # --- 单点结果 ---
@@ -1195,15 +1193,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             t = to_int16(self.mb.read_holding(R.TEMP, 1)[0]) / 10.0
-            t2_raw = self.mb.read_holding(R.AUX_TEMP, 1)[0]
-            t2_txt = "无效" if t2_raw == 0x8000 else ("%.1f ℃" % (to_int16(t2_raw) / 10.0))
-            self.lbl_temp._val.setText("主 %.1f ℃ / 第二 %s" % (t, t2_txt))
+            self.lbl_temp._val.setText("%.1f ℃" % t)
         except Exception:
             pass
         try:
             v = self.mb.read_holding(R.VOLTAGE, 1)[0] / 10000.0
-            v2 = self.mb.read_holding(R.AUX_VOLTAGE, 1)[0] / 10000.0
-            self.lbl_volt._val.setText("主 %.4f V / 第二 %.4f V" % (v, v2))
+            self.lbl_volt._val.setText("%.4f V" % v)
         except Exception:
             pass
         try:
