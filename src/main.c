@@ -86,7 +86,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0233;   // v2.33: 开机给JDY按UID改唯一广播名"JCY-XXXX"(多板区分); 含v2.32 autorange修
+    jcy_fw_version = 0x0234;   // v2.34: jdy_rename发完AT+NAME加AT+RESET(JDY干净重广播,蓝牙OTA后免手动断电); 含v2.33改名+v2.32 autorange
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -512,7 +512,9 @@ static void dnb_delay_cycles(volatile uint32_t n) { n *= g_clkmul; while (n--) _
 
 /* 开机给 JDY-10 蓝牙模块改广播名为 "JCY-XXXX" (X=STM32 96位UID 低16位 hex), 让多块板
  * 同环境扫描时能一眼区分(原来都叫 JDY-10-V2.5 没法分). JDY-10 上电未连接时接受 AT 命令,
- * 改名 JDY 自己持久化存储; 每次开机发一遍(幂等). 发完延时让 JDY 处理. */
+ * 改名 JDY 自己持久化存储. 发完 AT+RESET 让 JDY 干净重置+带新名重广播 —— 关键: 蓝牙 OTA
+ * 升级后(JDY刚从OTA会话出来)单发 AT+NAME 不会重广播(要手动断电); 加 AT+RESET 后 OTA 升完
+ * 自动以 JCY-XXXX 出现, 不用手动断电. 代价: 每次上电 JDY 多 ~1.5s 重置(可接受). */
 static void jdy_rename(void) {
     static const char H[] = "0123456789ABCDEF";
     uint16_t id = *(volatile uint16_t*)0x1FFFF7E8u;   /* UID 低16位, 各芯片唯一 */
@@ -523,7 +525,9 @@ static void jdy_rename(void) {
     usart1_send((uint8_t)H[(id >>  4) & 0xF]);
     usart1_send((uint8_t)H[ id        & 0xF]);
     usart1_send_str("\r\n");
-    dnb_delay_cycles(800000u);
+    dnb_delay_cycles(1500000u);                        /* 等 JDY 存名 */
+    usart1_send_str("AT+RESET\r\n");                   /* JDY 重置 → 带新名干净重广播 */
+    dnb_delay_cycles(1500000u);
 }
 
 /* ════════════ DS18B20 电芯温(环境温)探头 — 1-Wire 位带, DWT µs 延时 ════════════
