@@ -86,7 +86,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0232;   // v2.32: autorange 低内阻电芯改用1Ω档(|Z|<3mΩ直接选最灵敏档); 基线v2.27
+    jcy_fw_version = 0x0233;   // v2.33: 开机给JDY按UID改唯一广播名"JCY-XXXX"(多板区分); 含v2.32 autorange修
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -378,6 +378,7 @@ static void usart1_send(uint8_t c) {
     while (!(USART1->SR & USART_SR_TXE));
     USART1->DR = c;
 }
+static void usart1_send_str(const char *s) { while (*s) usart1_send((uint8_t)*s++); }
 
 static void usart1_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
@@ -508,6 +509,22 @@ static uint32_t dnb_make_cmd(uint8_t id, uint8_t cmd, uint16_t data) {
 
 /* DNB 命令间延时: 调用点按 8MHz cycle 数写的; 72MHz 下 nop 快9倍 → ×9 保持原 wall-time (DNB SPI 时序不变) */
 static void dnb_delay_cycles(volatile uint32_t n) { n *= g_clkmul; while (n--) __asm volatile ("nop"); }
+
+/* 开机给 JDY-10 蓝牙模块改广播名为 "JCY-XXXX" (X=STM32 96位UID 低16位 hex), 让多块板
+ * 同环境扫描时能一眼区分(原来都叫 JDY-10-V2.5 没法分). JDY-10 上电未连接时接受 AT 命令,
+ * 改名 JDY 自己持久化存储; 每次开机发一遍(幂等). 发完延时让 JDY 处理. */
+static void jdy_rename(void) {
+    static const char H[] = "0123456789ABCDEF";
+    uint16_t id = *(volatile uint16_t*)0x1FFFF7E8u;   /* UID 低16位, 各芯片唯一 */
+    dnb_delay_cycles(2000000u);                       /* 等 JDY 上电就绪 (~按时钟缩放 wall-time) */
+    usart1_send_str("AT+NAMEJCY-");
+    usart1_send((uint8_t)H[(id >> 12) & 0xF]);
+    usart1_send((uint8_t)H[(id >>  8) & 0xF]);
+    usart1_send((uint8_t)H[(id >>  4) & 0xF]);
+    usart1_send((uint8_t)H[ id        & 0xF]);
+    usart1_send_str("\r\n");
+    dnb_delay_cycles(800000u);
+}
 
 /* ════════════ DS18B20 电芯温(环境温)探头 — 1-Wire 位带, DWT µs 延时 ════════════
  * 引脚 ⚠️待定(等 Altium 原理图确认空闲且引出的脚): 现占位 PB9。改这 3 个宏即可换脚。
@@ -870,6 +887,7 @@ int main(void)
     flash_load_cal();   // 从Flash加载采样电阻校准(若有), 覆盖默认10/5/1Ω
     usart2_init();
     usart1_init();      // J12 透传蓝牙模块: Modbus over BLE (与 USART2 同协议)
+    jdy_rename();        // 开机给 JDY 按本板序列号改唯一广播名(多板同环境可区分)
     spi1_init();
     resis_gpio_init();   // 采样电阻量程选通 GPIO (PB5/PB3/PD2)
     dwt_init();          // DWT 周期计数器 (DS18B20 µs 延时用)
