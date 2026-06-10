@@ -18,9 +18,9 @@ void SysTick_Handler(void) { g_ms++; }
 uint32_t g_pclk1 = 8000000, g_pclk2 = 8000000;   // 实际 APB1/APB2 时钟 (时钟初始化填; USART BRR/SPI 按它算)
 uint32_t g_clkmul = 1;                            // SystemCoreClock/8MHz (=9@72MHz / =1@8MHz保底; 延时缩放)
 volatile uint16_t jcy_temp;          // 0x3300 U8测量芯片die温 (T*10, raw*5/8)
-volatile uint16_t jcy_aux_temp = 0x8000;  // 0x3301 U8 GuardDieTemp (T*10,有符号); 0x8000=无效
+volatile uint16_t jcy_aux_temp = 0x8000;  // 0x3301 U6辅助芯片die温 (T*10,有符号); 0x8000=无效
 volatile uint16_t jcy_voltage;       // 0x3340 U8测量芯片主电压 (V*10000)
-volatile uint16_t jcy_aux_voltage;   // 0x3341 U8 GuardVolt (V*10000)
+volatile uint16_t jcy_aux_voltage;   // 0x3341 U6辅助/第二采集芯片主电压 (V*10000)
 volatile uint16_t jcy_status;
 volatile uint16_t jcy_zm_freq;
 volatile uint16_t jcy_zm_avg;
@@ -89,7 +89,7 @@ static void init_registers(void) {
     jcy_status     = 0x0003;
     jcy_zm_freq    = 40;
     jcy_zm_avg     = 1;   // ZM平均次数(1=不平均). >1则多次测量取平均压噪, N倍耗时
-    jcy_fw_version = 0x0231;   // v2.31: expose U8 GuardDieTemp(0x3301) + GuardVolt(0x3341)
+    jcy_fw_version = 0x0231;   // v2.31: expose U6 aux temperature(0x3301) + voltage(0x3341)
     jcy_git_rev    = 0x0001;
     jcy_build_date = 0x0602;   // 2026-06-02 (MMDD)
     jcy_dnb_debug  = 0;
@@ -139,12 +139,12 @@ static uint16_t get_reg(uint16_t addr) {
         case 0x3E2C: return jcy_dnb_phase_dbg;
         case 0x3E30: return jcy_reenum_count;  // DNB 自愈重枚举次数
         case 0x3300: return jcy_temp;
-        case 0x3301: return jcy_aux_temp;    // 辅助温度: U8 GuardDieTemp
+        case 0x3301: return jcy_aux_temp;    // 辅助温度: U6 die温
         case 0x3E31: return (uint16_t)(DWT->CYCCNT & 0xFFFF);   // DWT自检(本芯片不计数, 已弃用)
         case 0x3E32: return (uint16_t)(g_ms & 0xFFFF);          // SysTick自检: 连读两次应在变(1ms tick)
         case 0x3E33: return (uint16_t)(SystemCoreClock / 1000000u);  // 实际主频MHz (72=HSE起振OK / 8=保底)
         case 0x3340: return jcy_voltage;
-        case 0x3341: return jcy_aux_voltage; // 辅助电压: U8 GuardVolt
+        case 0x3341: return jcy_aux_voltage; // 辅助/第二采集芯片电压: U6 MainVolt
         case 0x3380: return jcy_status;
         // 阻抗实部 RE 0x3000~0x3003 / 虚部 IM 0x3080~0x3083: 64位有符号大端, 主机 /100000=μΩ。
         case 0x3000: return (uint16_t)(jcy_zm_re64 >> 48);
@@ -479,9 +479,7 @@ static void spi1_full_duplex(uint8_t *tx, uint8_t *rx, uint32_t len) {
 #define DNB_STATUS_SRVREQ     0x12
 
 #define DNB_DATA_MAINVOLT     0x00
-#define DNB_DATA_GUARDVOLT    0x01
 #define DNB_DATA_MAINDIETEMP  0x04
-#define DNB_DATA_GUARDDIETEMP 0x05
 #define DNB_DATA_VZM          0x06
 
 #define DNB_SETMODE_NORMAL    0x04
@@ -985,12 +983,12 @@ int main(void)
                 jcy_voltage = dnb_decode_main_volt(uv, (uint16_t *)&jcy_dnb_volt_raw);
                 dnb_delay_cycles(8000);
 
-                // U8辅助: GuardDieTemp/GuardVolt 暴露给上位机 0x3301/0x3341。
-                uint32_t aut = dnb_get_data(DNB_MEAS_ID, DNB_DATA_GUARDDIETEMP);
+                // U6辅助/第二采集芯片: 暴露给上位机 0x3301/0x3341。
+                uint32_t aut = dnb_get_data(1, DNB_DATA_MAINDIETEMP);
                 int16_t at12 = dnb_decode_main_die_temp(aut);
                 jcy_aux_temp = (uint16_t)((int32_t)at12 * 5 / 8);
                 dnb_delay_cycles(8000);
-                uint32_t auv = dnb_get_data(DNB_MEAS_ID, DNB_DATA_GUARDVOLT);
+                uint32_t auv = dnb_get_data(1, DNB_DATA_MAINVOLT);
                 jcy_aux_voltage = dnb_decode_main_volt(auv, 0);
 
                 // ── DNB 自愈: 温度+电压原始值同时为0 = DNB掉枚举(电池/夹子接触瞬断). ──
