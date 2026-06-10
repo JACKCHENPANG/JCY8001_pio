@@ -136,7 +136,7 @@ function crc32(u8){let c=~0>>>0;for(let i=0;i<u8.length;i++){c^=u8[i];for(let k=
 let gOta=false;   // OTA进行中(让断连处理器别清状态)
 function parseRead(b){if(!b||b.length<5||b[0]!==SID||(b[1]&0x80))return null;const nb=b[2];if(b.length<5+nb-2)return null;const regs=[];for(let i=0;i<nb;i+=2)regs.push((b[3+i]<<8)|b[3+i+1]);return regs;}
 function regs64(r){let v=0n;for(let i=0;i<4;i++)v=(v<<16n)|BigInt(r[i]&0xFFFF);if(v>>63n)v-=(1n<<64n);return Number(v)/100000.0;}
-const REG={TEMP:0x3300,CELLTEMP:0x3301,VOLT:0x3340,FW:0x3E02,SERIAL:0x3E10,SAMP:0x40C0,GAIN:0x4280,AVG:0x4040,FAST:0x4340,MODE:0x4300,AUTOR:0x4380,TBL:0x4400,NPTS:0x43C0,STATE:0x3E40,DONE:0x3E41,RE:0x3400,IM:0x3500};
+const REG={TEMP:0x3300,CELLTEMP:0x3301,VOLT:0x3340,VOLT2:0x3341,FW:0x3E02,SERIAL:0x3E10,SAMP:0x40C0,GAIN:0x4280,AVG:0x4040,FAST:0x4340,MODE:0x4300,AUTOR:0x4380,TBL:0x4400,NPTS:0x43C0,STATE:0x3E40,DONE:0x3E41,RE:0x3400,IM:0x3500};
 // 设备唯一序列号: 读固件出厂96位UID(6寄存器)→CRC32→JCY-XXXXXXXX(确定性,每台唯一)
 function serialFrom(regs){let c=~0>>>0;for(const r of regs){for(const b of [(r>>8)&0xFF,r&0xFF]){c^=b;for(let k=0;k<8;k++)c=(c>>>1)^(0xEDB88320&-(c&1));}}c=(~c)>>>0;return 'JCY-'+c.toString(16).toUpperCase().padStart(8,'0');}
 const FULL=[0x0B42,0x09A2,0x08C6,0x087A,0x0796,0x082E,0x073A,0x0812,0x0716,0x070E,0x0806,0x070A,0x0902,0x0706,0x0802,0x0702,0x0602,0x0502,0x0402,0x0302];
@@ -470,7 +470,7 @@ async function measureGood(codes,opts,gate,maxTries,onStatus){
 const $=id=>document.getElementById(id);
 function setSt(t,ok){$('st').textContent=t;$('st').className='val '+(ok?'ok':'');}
 function showTab(t){$('tabA').className='tab'+(t==='A'?' on':'');$('tabB').className='tab'+(t==='B'?' on':'');$('viewA').style.display=t==='A'?'block':'none';$('viewB').style.display=t==='B'?'block':'none';}
-let gTemp=null,gVolt=null,gLast=null,gPhoto=null,gWarmed=false,gSerial=null,gFw=0,gCellTemp=null,gLockGear=null;
+let gTemp=null,gVolt=null,gVolt2=null,gLast=null,gPhoto=null,gWarmed=false,gSerial=null,gFw=0,gCellTemp=null,gLockGear=null;
 const GEAR_TXT={0:'10Ω(~100mΩ)',1:'5Ω(~10mΩ)',2:'1Ω(~1mΩ)'};
 function showGearLock(){const on=(gLockGear!=null&&$('range').value==='auto');$('gearLockRow').style.display=on?'flex':'none';if(on)$('gearLockTxt').textContent=GEAR_TXT[gLockGear]||('档'+gLockGear);}
 // 取归一化用的温度: 优先辅助温度(0x3301: v2.29+ 为U6 die温; 旧版为外接探头), 否则回退主芯片温
@@ -483,7 +483,9 @@ $('btnConn').onclick=async()=>{try{setSt('连接中...',false);await bleConnect(
   if(gFw>=0x0224){try{const ct=(await rd(REG.CELLTEMP,1))[0];if(ct!==0x8000){let s=ct>32767?ct-65536:ct;gCellTemp=s/10;}}catch(e){}}
   $('tp').textContent='主芯片 '+gTemp.toFixed(1)+'℃ / 辅助 '+(gCellTemp!=null?gCellTemp.toFixed(1)+'℃':'无效');
   gVolt=(await rd(REG.VOLT,1))[0]/10000;
-  $('vt').textContent=gVolt.toFixed(4)+'V';
+  gVolt2=null;
+  try{const v2=(await rd(REG.VOLT2,1))[0];if(v2)gVolt2=v2/10000;}catch(e){}
+  $('vt').textContent='主 '+gVolt.toFixed(4)+'V / 第二 '+(gVolt2!=null?gVolt2.toFixed(4)+'V':'无效');
   $('btnConn').textContent='已连接';$('btnSweep').disabled=false;$('btnStart').disabled=false;$('btnStart').textContent='开始';checkFwLatest();
  }catch(e){setSt('连接失败:'+e.message,false);}};
 // ===== A 单芯 =====
